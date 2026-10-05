@@ -147,6 +147,53 @@ def is_content_subset(victim: str, keeper: str) -> bool:
     return True
 
 
+def find_mediafree_shells(root: str) -> list[tuple[str, str]]:
+    """找「一个媒体文件都没有」的空壳，返回 ``[(空壳, 保留目录)]``。
+
+    为什么需要这条**不依赖 post.json** 的判据：有的空壳根目录里连
+    ``post.json`` 都没有（元数据被写进了深层嵌套的子目录），
+    自然读不出作品 ID，也就进不了按 ID 分组的流程。
+
+    安全性来自一个很强的事实：**这些目录里没有任何媒体文件**，
+    所以删掉不可能丢内容。再加一层保险——必须存在一个同父目录、
+    名字互为前缀、且**确实含媒体**的兄弟目录。
+    """
+    parents: dict[str, list[str]] = {}
+    for dirpath, dirnames, _filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        parents.setdefault(os.path.dirname(dirpath), []).append(dirpath)
+
+    found: list[tuple[str, str]] = []
+    for siblings in parents.values():
+        if len(siblings) < 2:
+            continue
+        for folder in siblings:
+            if media_files(folder):
+                continue                        # 有媒体，不是空壳
+            name = os.path.basename(folder)
+            keeper = None
+            for other in siblings:
+                if other == folder or not media_files(other):
+                    continue
+                other_name = os.path.basename(other)
+                if other_name.startswith(name) or name.startswith(other_name):
+                    keeper = other
+                    break
+            if keeper:
+                found.append((folder, keeper))
+
+    # 去掉「位于另一个空壳之内」的，避免重复报告 / 删除顺序问题
+    found.sort(key=lambda pair: len(pair[0]))
+    result: list[tuple[str, str]] = []
+    for folder, keeper in found:
+        key = os.path.normcase(os.path.abspath(folder))
+        if any(key.startswith(os.path.normcase(os.path.abspath(kept)) + os.sep)
+               for kept, _ in result):
+            continue
+        result.append((folder, keeper))
+    return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="清理重复的作品文件夹（默认只报告，不删除）")
@@ -169,16 +216,23 @@ def main() -> int:
     print(f"共发现 {len(groups)} 篇作品带 post.json")
 
     duplicates = group_duplicates(groups)
+    # 再补上「不含任何媒体」的空壳（它们可能连 post.json 都没有，读不出 ID）
+    shells = find_mediafree_shells(root)
     if args.list_all:
         for pid in sorted(groups):
             print(f"  {pid}: {len(groups[pid])} 个文件夹")
-    print(f"其中文件夹重复的：{len(duplicates)} 组")
-    if not duplicates:
+    print(f"按作品 ID 找到的重复组：{len(duplicates)}")
+    print(f"一个媒体文件都不含的空壳：{len(shells)}")
+    if not duplicates and not shells:
         print("\n✅ 没有重复文件夹")
         return 0
 
-    removable: list[tuple[str, str, str, int]] = []   # (post_id, keeper, victim, victim_size)
+    removable: list[tuple[str, str, str, int]] = []   # (label, keeper, victim, victim_size)
     manual: list[tuple[str, str, list[str]]] = []
+
+    seen_victims = {os.path.normcase(os.path.abspath(v)) for v, _k in shells}
+    for victim, keeper in shells:
+        removable.append(("空壳", keeper, victim, 0))
 
     for label, dirs in sorted(duplicates.items()):
         stats = {}
@@ -188,6 +242,8 @@ def main() -> int:
         ranked = sorted(dirs, key=lambda d: (-stats[d][1], -stats[d][0], d))
         keeper = ranked[0]
         for victim in ranked[1:]:
+            if os.path.normcase(os.path.abspath(victim)) in seen_victims:
+                continue                              # 上面已经算过了
             count, size = stats[victim]
             # 空壳，或者内容在保留目录里都有副本 -> 安全删除
             if count == 0 or is_content_subset(victim, keeper):

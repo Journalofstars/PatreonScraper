@@ -5,16 +5,27 @@
 
 默认截图写到 <项目根>\\data\\shots\\。
 不需要网络，也不会弹出窗口（使用 Qt 的 offscreen 平台）。
+
+**数据目录是隔离的**：会临时把 ``PATREON_DL_HOME`` 指到一个临时目录，
+免得测试往用户真实的 ``data/`` 里写配置、状态库或 Cookie。
 """
 
 from __future__ import annotations
 
+import atexit
 import os
+import shutil
 import sys
+import tempfile
 import traceback
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
+
+# 必须在 import patreon_dl.* 之前设置：config 在导入时就会解析 APP_DIR
+_SMOKE_HOME = tempfile.mkdtemp(prefix="patreon-dl-smoke-")
+os.environ["PATREON_DL_HOME"] = _SMOKE_HOME
+atexit.register(shutil.rmtree, _SMOKE_HOME, True)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)

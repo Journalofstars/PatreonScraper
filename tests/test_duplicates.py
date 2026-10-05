@@ -40,10 +40,19 @@ def write_post_json(directory: str, post_id: str) -> None:
         json.dump({"post": {"id": post_id}}, handle)
 
 
+def make_state(root: str) -> StateStore:
+    """建一个**隔离的**状态库。
+
+    必须显式传 ``path``：不传的话 StateStore 会退回 ``config.STATE_FILE``，
+    也就是用户真实的 ``data/state.json``，测试就会往里塞垃圾记录。
+    """
+    return StateStore(Path(root) / "state.json", output_dir=root)
+
+
 class ResolvedDirsTests(unittest.TestCase):
     def test_groups_resolved_media_by_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
-            st = StateStore(output_dir=tmp)
+            st = make_state(tmp)
             d1 = os.path.join(tmp, "Creator", "Post A")
             d2 = os.path.join(tmp, "Creator", "Post B")
             f1 = write(os.path.join(d1, "a.png"), b"x" * 10)
@@ -57,13 +66,13 @@ class ResolvedDirsTests(unittest.TestCase):
 
     def test_missing_files_are_not_reported(self):
         with tempfile.TemporaryDirectory() as tmp:
-            st = StateStore(output_dir=tmp)
+            st = make_state(tmp)
             st.mark("1", "100:m1", os.path.join(tmp, "gone.png"), 10)
             self.assertEqual(st.resolved_dirs_for_post("1", "100"), [])
 
     def test_media_keys_of_post_filters_by_prefix(self):
         with tempfile.TemporaryDirectory() as tmp:
-            st = StateStore(output_dir=tmp)
+            st = make_state(tmp)
             st.mark("1", "100:m1", os.path.join(tmp, "a"), 1)
             st.mark("1", "1000:m1", os.path.join(tmp, "b"), 1)
             self.assertEqual(st.media_keys_of_post("1", "100"), ["100:m1"])
@@ -95,7 +104,7 @@ class ReuseExistingDirectoryTests(unittest.TestCase):
     def test_returns_existing_folder(self):
         old = self.make_old_folder()
         media_path = write(os.path.join(old, "01_a.png"), b"x" * 32)
-        st = StateStore(output_dir=self.tmp)
+        st = make_state(self.tmp)
         st.mark("1", "100:m1", media_path, 32)
 
         reused = reuse_existing_directory(self.cfg, self.campaign, self.post, st)
@@ -103,7 +112,7 @@ class ReuseExistingDirectoryTests(unittest.TestCase):
 
     def test_returns_none_when_nothing_downloaded(self):
         self.make_old_folder()
-        st = StateStore(output_dir=self.tmp)
+        st = make_state(self.tmp)
         self.assertIsNone(
             reuse_existing_directory(self.cfg, self.campaign, self.post, st))
 
@@ -112,7 +121,7 @@ class ReuseExistingDirectoryTests(unittest.TestCase):
         folder = self.make_old_folder()
         write_post_json(folder, "999")            # 换个归属
         media_path = write(os.path.join(folder, "01_a.png"), b"x" * 32)
-        st = StateStore(output_dir=self.tmp)
+        st = make_state(self.tmp)
         st.mark("1", "100:m1", media_path, 32)
         self.assertIsNone(
             reuse_existing_directory(self.cfg, self.campaign, self.post, st))
@@ -122,7 +131,7 @@ class ReuseExistingDirectoryTests(unittest.TestCase):
         root = self.make_old_folder()
         section = os.path.join(root, "01_Part One")
         media_path = write(os.path.join(section, "01_a.png"), b"x" * 32)
-        st = StateStore(output_dir=self.tmp)
+        st = make_state(self.tmp)
         st.mark("1", "100:m1", media_path, 32)
         self.assertEqual(
             reuse_existing_directory(self.cfg, self.campaign, self.post, st), root)
@@ -131,7 +140,7 @@ class ReuseExistingDirectoryTests(unittest.TestCase):
         outside = os.path.join(os.path.dirname(self.tmp), "elsewhere", "Post")
         write_post_json(outside, self.post.id)
         media_path = write(os.path.join(outside, "01_a.png"), b"x" * 32)
-        st = StateStore(output_dir=self.tmp)
+        st = make_state(self.tmp)
         st.mark("1", "100:m1", media_path, 32)
         self.assertIsNone(
             reuse_existing_directory(self.cfg, self.campaign, self.post, st))
@@ -140,7 +149,7 @@ class ReuseExistingDirectoryTests(unittest.TestCase):
         self.cfg.group_by_post = False
         old = self.make_old_folder()
         media_path = write(os.path.join(old, "01_a.png"), b"x" * 32)
-        st = StateStore(output_dir=self.tmp)
+        st = make_state(self.tmp)
         st.mark("1", "100:m1", media_path, 32)
         self.assertIsNone(
             reuse_existing_directory(self.cfg, self.campaign, self.post, st))
@@ -169,7 +178,7 @@ class BuildTasksReuseTests(unittest.TestCase):
             old = os.path.join(tmp, "Creator", "2025-01-01_Old Truncated Name")
             write_post_json(old, "100")
             media_path = write(os.path.join(old, "01_a.png"), b"x" * 32)
-            st = StateStore(output_dir=tmp)
+            st = make_state(tmp)
             st.mark("1", "100:m1", media_path, 32)
 
             tasks = build_tasks(cfg, campaign, [post], st)
@@ -191,7 +200,7 @@ class BuildTasksReuseTests(unittest.TestCase):
                                  filename="a.png", media_id="m1", size=32,
                                  post_id="100")],
             )
-            st = StateStore(output_dir=tmp)
+            st = make_state(tmp)
             tasks = build_tasks(cfg, campaign, [post], st)
             self.assertEqual(len(tasks), 1)
             self.assertIn("2025-01-01_A Title", tasks[0].dest_dir)
@@ -267,6 +276,82 @@ class CleanupToolTests(unittest.TestCase):
             groups = cdf.collect_groups(tmp)
             self.assertEqual(sorted(groups), ["100", "200"])
             self.assertEqual(len(groups["100"]), 2)
+
+
+class MediaFreeShellTests(unittest.TestCase):
+    """不含任何媒体的空壳。
+
+    有的空壳根目录里连 ``post.json`` 都没有（元数据被写进了深层子目录），
+    读不出作品 ID，进不了按 ID 分组的流程。这条判据不依赖 ``post.json``：
+    只要「目录内一个媒体文件都没有」+「存在名字互为前缀且含媒体的兄弟」。
+    """
+
+    def build(self, tmp):
+        """典型场景：正名目录有媒体，短名兄弟只有元数据。"""
+        good = os.path.join(tmp, "C", "2025-01-01_Title Long")
+        shell = os.path.join(tmp, "C", "2025-01-01_Title")
+        write(os.path.join(good, "01_a.mp4"), b"v" * 100)
+        write(os.path.join(shell, "post.json"), b"{}")
+        write(os.path.join(shell, "post.txt"), b"hi")
+        return good, shell
+
+    def test_finds_mediafree_shell(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            good, shell = self.build(tmp)
+            found = cdf.find_mediafree_shells(tmp)
+            self.assertEqual(len(found), 1)
+            victim, keeper = found[0]
+            self.assertEqual(os.path.abspath(victim), os.path.abspath(shell))
+            self.assertEqual(os.path.abspath(keeper), os.path.abspath(good))
+
+    def test_works_without_post_json_in_the_shell(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            good = os.path.join(tmp, "C", "2025-01-01_Title Long")
+            shell = os.path.join(tmp, "C", "2025-01-01_Title")
+            write(os.path.join(good, "01_a.mp4"), b"v" * 100)
+            # 空壳里连 post.json 都没有，元数据在更深的子目录里
+            write(os.path.join(shell, "Handj_ b", "post.json"), b"{}")
+            victims = [os.path.abspath(v) for v, _k in cdf.find_mediafree_shells(tmp)]
+            self.assertIn(os.path.abspath(shell), victims)
+
+    def test_ignores_folder_that_has_media(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(os.path.join(tmp, "C", "2025-01-01_Title Long", "01_a.mp4"), b"v" * 100)
+            write(os.path.join(tmp, "C", "2025-01-01_Title", "01_b.mp4"), b"w" * 100)
+            self.assertEqual(cdf.find_mediafree_shells(tmp), [])
+
+    def test_ignores_shell_without_prefixed_sibling(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(os.path.join(tmp, "C", "Solo", "post.json"), b"{}")
+            write(os.path.join(tmp, "C", "Unrelated", "01_a.mp4"), b"v" * 100)
+            self.assertEqual(cdf.find_mediafree_shells(tmp), [])
+
+    def test_ignores_shell_whose_sibling_has_no_media_either(self):
+        """两个都没媒体时给不出「保留哪个」的结论，宁可不报。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            write(os.path.join(tmp, "C", "Title", "post.json"), b"{}")
+            write(os.path.join(tmp, "C", "Title Long", "post.json"), b"{}")
+            self.assertEqual(cdf.find_mediafree_shells(tmp), [])
+
+    def test_nested_shell_is_not_reported_separately(self):
+        """位于另一个空壳之内的不再单独报告，避免重复删除。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            write(os.path.join(tmp, "C", "Title Long", "01_a.mp4"), b"v" * 100)
+            shell = os.path.join(tmp, "C", "Title")
+            write(os.path.join(shell, "post.json"), b"{}")
+            write(os.path.join(shell, "Title Long Extra", "post.json"), b"{}")
+            victims = [os.path.abspath(v) for v, _k in cdf.find_mediafree_shells(tmp)]
+            self.assertIn(os.path.abspath(shell), victims)
+            self.assertNotIn(os.path.abspath(os.path.join(shell, "Title Long Extra")),
+                             victims)
+
+    def test_metadata_alone_does_not_count_as_content(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(os.path.join(tmp, "C", "Title Long", "01_a.mp4"), b"v" * 100)
+            shell = os.path.join(tmp, "C", "Title")
+            write(os.path.join(shell, "post.json"), b"{}")
+            write(os.path.join(shell, "post.txt"), b"hi")
+            self.assertEqual(cdf.media_files(shell), [])
 
 
 if __name__ == "__main__":
