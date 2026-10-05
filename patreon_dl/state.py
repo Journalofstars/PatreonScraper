@@ -217,6 +217,27 @@ class StateStore:
             media = self._campaign(campaign_id).get("media", {})
             return sum(1 for key in media if key.startswith(prefix))
 
+    def media_keys_of_post(self, campaign_id: str, post_id: str) -> list[str]:
+        prefix = f"{post_id}:"
+        with self._lock:
+            media = self._campaign(campaign_id).get("media", {})
+            return [key for key in media if key.startswith(prefix)]
+
+    def resolved_dirs_for_post(self, campaign_id: str, post_id: str) -> list[str]:
+        """这篇作品的媒体**当前实际**落在哪些目录里。
+
+        返回的目录按命中媒体数从多到少排序，只包含确实能解析到文件的那些。
+        用来在命名规则变过之后，继续沿用旧目录，避免分裂出重复文件夹。
+        """
+        counts: dict[str, int] = {}
+        for key in self.media_keys_of_post(campaign_id, post_id):
+            found = self.resolve_path(campaign_id, key)
+            if not found:
+                continue
+            folder = os.path.dirname(os.path.abspath(found))
+            counts[folder] = counts.get(folder, 0) + 1
+        return [d for d, _ in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))]
+
     # --------------------------------------------------------------- 写入
     def mark(self, campaign_id: str, key: str, path: str, size: int | None,
              kind: str = "", url: str = "") -> None:

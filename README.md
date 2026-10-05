@@ -234,6 +234,18 @@ dist\PatreonDownloader\PatreonDownloader.exe --selftest
 程序会自动解析并逐个取回（设置里「正文内嵌媒体」保持开启）。
 想给每个视频单独一个文件夹，再打开「帖子内含多个部分时…」。
 
+**下载目录里出现两个名字几乎一样的文件夹？**
+命名规则调整过（目录名的截断方式变过），旧文件夹装着媒体、新文件夹只写了元数据。
+现在程序会**沿用旧目录**，不再产生新的；已经产生的用这个清掉：
+
+```bat
+.venv\Scripts\python.exe tools\clean_duplicate_folders.py           :: 先看，不动手
+.venv\Scripts\python.exe tools\clean_duplicate_folders.py --apply   :: 确认后删除
+```
+
+它按 `post.json` 里的作品 ID 分组，只删「空壳」或「每个文件在保留目录里都有
+同名同大小副本」的那些，不会误删分段子目录。
+
 **下载到的视频只有几十秒，但网页上明显更长？**
 Patreon 有时会给预告片单独建一个 mux 资产，而作品关系里的播放地址**恰好指向预告**。
 早期版本会把它当成完整版（比如 19:25 的片子只下到 47 秒）。
@@ -291,8 +303,8 @@ patreon_dl\
 ├── metadata.py     归档输出        │   ├── theme.py           主题
 ├── state.py        增量状态        │   └── workers.py         后台线程
 ├── cookies.py      Cookie 处理     └── util.py
-tests\   test_extract.py  test_state.py  gui_smoke.py  live_check.py
-tools\   build_exe.py     make_bat.py
+tests\   test_extract.py  test_state.py  test_duplicates.py  gui_smoke.py  live_check.py
+tools\   build_exe.py     make_bat.py    clean_duplicate_folders.py
 docs\    技术细节.md      打包说明.md
 data\    运行时数据（自动创建，已在 .gitignore 中）
 ```

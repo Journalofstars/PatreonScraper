@@ -214,6 +214,11 @@ def main() -> int:
 
     for path in written:
         print(f"  {os.path.getsize(path):>8} B  {path}")
+    if os.environ.get("QT_QPA_PLATFORM") == "offscreen":
+        # offscreen 平台不加载真实字体与窗口装饰，抓出来的图是缩水的，
+        # 当文档配图会很难看 —— 顺手提醒一句，免得覆盖掉 README 里的正常截图。
+        print("  ⚠️  当前是 offscreen 平台，截图仅供冒烟测试；"
+              "要重新生成文档配图请设 QT_QPA_PLATFORM=windows")
     print("✅ 界面冒烟测试通过")
     return 0
 

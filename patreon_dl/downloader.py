@@ -17,6 +17,7 @@ import requests
 
 from .config import USER_AGENT, AppConfig
 from .cookies import CookieRecord, apply_to_session
+from .metadata import read_post_owner
 from .models import Campaign, MediaItem, PostItem
 from .state import StateStore
 from .util import guess_extension, human_size
@@ -590,6 +591,43 @@ class DownloadEngine:
 # ------------------------------------------------------------------ 任务构建
 
 
+def reuse_existing_directory(config: AppConfig, campaign: Campaign, post: PostItem,
+                             state: StateStore | None) -> str | None:
+    """如果这篇作品其实已经在别的目录下过，返回那个目录。
+
+    命名规则一旦调整（比如目录名的截断方式变了），按新规则算出来的目录名会和
+    旧的不同。已下载的媒体会被跳过，**但元数据仍然写进新目录**，于是磁盘上就
+    多出一个只有 ``post.json`` / ``post.txt`` 的空壳文件夹，和原来装着几百 MB
+    视频的那个并排 —— 这就是「名称相近的重复文件夹」。
+
+    这里靠目录里 ``post.json`` 记录的作品 ID 确认归属，所以不管嵌套几层都认得出。
+    """
+    if state is None or not config.group_by_post:
+        return None
+    output_dir = str(config.output_dir or "")
+    try:
+        candidates = state.resolved_dirs_for_post(campaign.id, post.id)
+    except Exception:  # noqa: BLE001
+        return None
+
+    for folder in candidates:
+        current = folder
+        for _ in range(6):                    # 最多往上 6 层（分段子目录、多层模板）
+            if output_dir and not state.relative_path(current, output_dir):
+                break                         # 跑到下载目录外面了，放弃
+            if read_post_owner(current) == post.id:
+                return current
+            parent = os.path.dirname(current)
+            if parent == current:
+                break
+            if output_dir and os.path.normcase(parent) == os.path.normcase(
+                os.path.abspath(output_dir)
+            ):
+                break
+            current = parent
+    return None
+
+
 def build_tasks(
     config: AppConfig,
     campaign: Campaign,
@@ -601,7 +639,6 @@ def build_tasks(
 ) -> list[Task]:
     """把作品列表展开成下载任务（已过滤内容类型）。"""
     from .extract import filter_by_kind
-    from .metadata import read_post_owner
     from .naming import creator_directory, media_filename, post_directory, section_directory
 
     log = on_log or (lambda message: None)
@@ -615,8 +652,12 @@ def build_tasks(
         if not media:
             continue
         directory = post_directory(config, campaign, post)
+        # 这篇作品已经下在别处了（命名规则变过）—— 继续用旧目录，别分裂出第二个
+        reused = reuse_existing_directory(config, campaign, post, state)
+        if reused:
+            directory = reused
         # 目录被另一篇作品占用了（同名同日期），加作品 ID 区分
-        if config.group_by_post and os.path.isdir(directory):
+        elif config.group_by_post and os.path.isdir(directory):
             owner = read_post_owner(directory)
             if owner and owner != post.id:
                 directory = post_directory(config, campaign, post, existing_owner=owner)
