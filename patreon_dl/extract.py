@@ -426,6 +426,29 @@ def _is_preview_name(name: str | None) -> bool:
     return "preview" in low
 
 
+def _preview_playback_id(attrs: dict[str, Any]) -> str | None:
+    """判断 ``video_preview`` 是不是一个**独立的**预告资产，是则返回它的播放 ID。
+
+    只有当预告时长明显短于完整时长时才认（``duration < full*0.95``）。
+    万一两者相等（预告其实就是整片），就不能把它当预告丢掉。
+    """
+    preview = _attr(attrs, "video_preview")
+    if not isinstance(preview, dict):
+        return None
+    playback = _mux_playback(str(preview.get("url") or ""))
+    if not playback:
+        return None
+
+    def as_float(value: Any) -> float | None:
+        return float(value) if isinstance(value, (int, float)) and value > 0 else None
+
+    short = as_float(preview.get("duration"))
+    full = as_float(preview.get("full_content_duration"))
+    if short is not None and full is not None and short >= full * 0.95:
+        return None            # 预告就是整片，别当预告
+    return playback[0]
+
+
 class _PostExtractor:
     """针对单个作品的提取器（维护去重与命名状态）。"""
 
@@ -437,6 +460,10 @@ class _PostExtractor:
         self._used_names: set[str] = set()
         self._mux_seen: set[str] = set()
         self._has_mux_full = False
+        # 「预告」用的 mux 播放 ID。Patreon 有时会给预告单独建一个 mux 资产
+        # （例如 46 秒的剪辑），而 relationship 里那个 media 的 download_url
+        # 恰恰指向它 —— 必须靠播放 ID 区分，否则会把预告当成完整版。
+        self.preview_playback_ids: set[str] = set()
 
     # --------------------------------------------------------------- 工具
     def _index_of(self) -> int:
@@ -497,6 +524,10 @@ class _PostExtractor:
         """
         if not self.options.prefer_mux_full or self._has_mux_full:
             return
+        # 预告那个资产的播放 ID 绝不能当成完整版
+        playback = _mux_playback(url)
+        if playback and playback[0] in self.preview_playback_ids:
+            return
         hls = _mux_hls_url(url)
         candidates = _mux_candidates(url)
         if not candidates and not hls:
@@ -556,11 +587,17 @@ class _PostExtractor:
         duration = _duration_of(attrs)
         media_type = str(_attr(attrs, "media_type") or "").lower()
 
+        # 带 mux 播放地址的媒体通常就是完整版；但如果这个地址属于「预告」
+        # 那个独立资产，就不能算 —— 否则 post_file 里的真完整版会被跳过。
         if isinstance(download_url, str) and "stream.mux.com" in download_url:
             playback = _mux_playback(download_url)
+            is_preview_asset = bool(
+                playback and playback[0] in self.preview_playback_ids
+            )
             if playback:
                 self._mux_seen.add(playback[0])
-            self._has_mux_full = True
+            if not is_preview_asset:
+                self._has_mux_full = True
 
         if kind == "video":
             is_hls = str(mimetype or "").lower() in HLS_MIMETYPES
@@ -582,6 +619,11 @@ class _PostExtractor:
                 # mux 播放：优先静态 MP4，受保护播放则只有 HLS 可用
                 candidates = _mux_candidates(url) if self.options.prefer_mux_full else []
                 hls = _mux_hls_url(url) if self.options.prefer_mux_full else None
+                playback = _mux_playback(url)
+                # 这个媒体是不是「预告」那个资产？
+                is_preview_asset = bool(
+                    playback and playback[0] in self.preview_playback_ids
+                )
                 if candidates:
                     primary = candidates[0]
                     fallbacks = list(candidates[1:])
@@ -591,10 +633,17 @@ class _PostExtractor:
                     primary, fallbacks = hls, []
                 else:
                     primary, fallbacks = url, []
+
+                is_preview = is_preview_asset or _is_preview_name(file_name)
+                if is_preview and not self.options.include_previews:
+                    # 不下预告；也**不能**让它占用「已有完整版」的名额，
+                    # 否则 post_file 里的真完整版会被跳过
+                    return
+
                 item = self._new(
                     primary, "video", mimetype="video/mp4" if (candidates or hls) else mimetype,
                     media_id=media_id, size=None, width=width, height=height,
-                    duration=duration, source="media", is_preview=False,
+                    duration=duration, source="media", is_preview=is_preview,
                 )
                 if file_name:
                     item.filename = file_name
@@ -606,7 +655,8 @@ class _PostExtractor:
                     item.extra["fallbacks"] = fallbacks
                 if hls:
                     item.extra["hls"] = hls
-                self._has_mux_full = True
+                if not is_preview_asset:
+                    self._has_mux_full = True
                 self._add(item)
                 return
 
@@ -830,6 +880,13 @@ def extract_post(
 
     extractor = _PostExtractor(post, options)
     relationships = _attr(post_obj, "relationships") or {}
+
+    # 0) 先认出「预告」用的是哪个 mux 资产。
+    #    有的作品预告和完整版是两个不同的 mux 资产，而 relationship 里那个
+    #    media 的 download_url 可能指向预告 —— 不先分辨就会把预告当完整版。
+    preview_playback_id = _preview_playback_id(attrs)
+    if preview_playback_id:
+        extractor.preview_playback_ids.add(preview_playback_id)
 
     # 1) 关系里引用的 media 对象
     for rel_name in ("attachments_media", "media", "images", "video", "audio"):

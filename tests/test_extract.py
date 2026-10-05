@@ -20,6 +20,7 @@ from patreon_dl.config import AppConfig
 from patreon_dl.cookies import parse_cookie_header, merge_cookies, has_session
 from patreon_dl.extract import (
     ExtractOptions,
+    _preview_playback_id,
     build_included_index,
     extract_post,
     filter_by_kind,
@@ -158,8 +159,15 @@ class ExtractVideoTests(unittest.TestCase):
         self.assertFalse(item.is_preview)
         self.assertTrue(item.extra.get("fallbacks"))
 
-    def test_video_preview_m3u8_upgrades_to_full_video(self):
-        """只有 video_preview（aud=v）时也应推导出完整版视频。"""
+    def test_video_preview_alone_is_not_upgraded_to_full(self):
+        """只有 ``video_preview`` 时**不能**推成完整版。
+
+        实测（某创作者 3 篇有预告的作品，读 m3u8 分片时长得出）：
+        预告那个播放 ID 给的就是短片（16.70s / 25.25s / 47.00s，与
+        ``video_preview.duration`` 一致），完整版在 ``post_file`` 的播放 ID 里
+        （737.50s / 965.87s / 1165.27s）。拿预告 URL 去推 ``highest.mp4``
+        只会下到一个几十秒的片子，还标成"完整版"。
+        """
         attrs_extra = {
             "video_preview": {
                 "duration": 30.0,
@@ -172,10 +180,17 @@ class ExtractVideoTests(unittest.TestCase):
             {},
             ExtractOptions(prefer_mux_full=True),
         )
-        videos = [m for m in post.media if m.kind == "video"]
+        self.assertEqual([m for m in post.media if m.kind == "video"], [])
+
+        # 显式要求下载预览时才会拿到它，而且要标成预告
+        with_preview = extract_post(
+            post_object("201", {}, [], post_type="video_external_file", **attrs_extra),
+            {},
+            ExtractOptions(prefer_mux_full=True, include_previews=True),
+        )
+        videos = [m for m in with_preview.media if m.kind == "video"]
         self.assertEqual(len(videos), 1)
-        self.assertIn("highest.mp4", videos[0].url)
-        self.assertFalse(videos[0].is_preview)
+        self.assertTrue(videos[0].is_preview)
 
     def test_image_thumbnail_token_is_not_used_for_video(self):
         """image.mux.com 的封面令牌 aud='t'，不能拿去请求视频（会 403）。"""
@@ -1034,6 +1049,131 @@ class CollectionTests(unittest.TestCase):
 def self_rich_video_json():
     return json.dumps({"type": "doc", "content": [
         {"type": "paragraph", "content": [{"type": "text", "text": "x"}]}]})
+
+
+class PreviewVsFullVideoTests(unittest.TestCase):
+    """预告和完整版是两个不同 mux 资产时，必须拿到完整版。
+
+    真实案例 post 164828421（19:25 的视频只下到 47 秒）：
+    ``video_preview`` 是一个独立的 47 秒 mux 资产（``8XyV8…``），
+    ``post_file`` 才是 19:25 的完整版（``qL01G8…``），而 relationship 里
+    那个 media 的 ``download_url`` 恰恰指向预告 —— 不靠播放 ID 区分就会下错。
+    """
+
+    PREVIEW_PID = "8XyV8FWxKqKTV2NsRdLnm5iFYKoAoNmhqCijkhBPP8Y"
+    FULL_PID = "qL01G8vvNP9rbanBJsa6AD94FdFuPxEUWwPOAo8KLb9w"
+
+    def mux(self, pid: str) -> str:
+        return f"https://stream.mux.com/{pid}.m3u8?token=fake.jwt.token"
+
+    def preview_attrs(self, short: float, full: float) -> dict:
+        return {"video_preview": {"duration": short, "full_content_duration": full,
+                                  "url": self.mux(self.PREVIEW_PID)}}
+
+    # ------------------------------------------------------------ 判定预告资产
+    def test_independent_preview_asset_is_detected(self):
+        attrs = self.preview_attrs(46.997, 1165.233)
+        self.assertEqual(_preview_playback_id(attrs), self.PREVIEW_PID)
+
+    def test_preview_equal_to_full_is_not_a_preview(self):
+        """万一「预告」其实就是整片，不能当预告丢掉。"""
+        self.assertIsNone(_preview_playback_id(self.preview_attrs(1165.233, 1165.233)))
+        self.assertIsNone(_preview_playback_id(self.preview_attrs(1160.0, 1165.233)))
+        # 明显更短才算真的预告
+        self.assertEqual(_preview_playback_id(self.preview_attrs(46.9, 1165.233)),
+                         self.PREVIEW_PID)
+
+    def test_missing_preview_info_returns_none(self):
+        for attrs in ({}, {"video_preview": None}, {"video_preview": {}},
+                      {"video_preview": {"duration": 5, "url": ""}},
+                      {"video_preview": {"duration": 5, "url": "https://x/y.m3u8"}}):
+            with self.subTest(attrs=attrs):
+                self.assertIsNone(_preview_playback_id(attrs))
+
+    # ------------------------------------------------------------ 核心回归
+    def test_full_video_wins_when_media_points_at_preview(self):
+        """核心回归：media 的 download_url 指向预告时，仍要拿到 post_file 的完整版。"""
+        post_obj = {
+            "type": "post",
+            "id": "164828421",
+            "attributes": {
+                "post_type": "video_external_file",
+                "title": "4 Vtubers",
+                "post_file": {"duration": 1165.233, "full_content_duration": 1165.233,
+                              "url": self.mux(self.FULL_PID)},
+                "video_preview": {"duration": 46.997, "full_content_duration": 1165.233,
+                                  "url": self.mux(self.PREVIEW_PID)},
+            },
+            "relationships": {"media": {"data": [{"type": "media", "id": "705328695"}]}},
+        }
+        media_obj = {
+            "type": "media",
+            "id": "705328695",
+            "attributes": {
+                "media_type": "video",
+                "mimetype": "application/x-mpegURL",
+                "download_url": (f"https://stream.mux.com/{self.PREVIEW_PID}"
+                                 "/highest.mp4?token=fake"),
+            },
+        }
+        post = extract_post(
+            post_obj,
+            build_included_index({"included": [media_obj]}),
+            ExtractOptions(include_previews=False),
+        )
+        videos = [m for m in post.media if m.kind == "video"]
+        self.assertEqual(len(videos), 1, "应该恰好一个视频")
+        self.assertFalse(videos[0].is_preview)
+        self.assertIn(self.FULL_PID, videos[0].url)
+        self.assertNotIn(self.PREVIEW_PID, videos[0].url)
+
+    def test_preview_kept_when_explicitly_requested(self):
+        """打开「下载预览」时，预告仍然要留着（但完整版也在）。"""
+        post_obj = {
+            "type": "post",
+            "id": "1",
+            "attributes": {
+                "post_type": "video_external_file",
+                "post_file": {"duration": 1165.0, "url": self.mux(self.FULL_PID)},
+                "video_preview": {"duration": 46.9, "full_content_duration": 1165.0,
+                                  "url": self.mux(self.PREVIEW_PID)},
+            },
+        }
+        post = extract_post(post_obj, {}, ExtractOptions(include_previews=True))
+        videos = [m for m in post.media if m.kind == "video"]
+        urls = " ".join(m.url for m in videos)
+        self.assertIn(self.FULL_PID, urls, "完整版必须在")
+        self.assertTrue(any(m.is_preview for m in videos), "预告也要在")
+
+    def test_preview_without_post_file_yields_nothing_by_default(self):
+        """只有预告、没有完整版时，默认不下载任何东西（也不误报为完整版）。"""
+        post_obj = {
+            "type": "post", "id": "2",
+            "attributes": {
+                "post_type": "video_external_file",
+                "video_preview": {"duration": 46.9, "full_content_duration": 1165.0,
+                                  "url": self.mux(self.PREVIEW_PID)},
+            },
+        }
+        post = extract_post(post_obj, {}, ExtractOptions(include_previews=False))
+        self.assertEqual([m for m in post.media if m.kind == "video"], [])
+
+    def test_same_asset_for_preview_and_full_still_downloads(self):
+        """预告和完整版同源（最常见情况）时，照常下载，不能误判成预告。"""
+        post_obj = {
+            "type": "post", "id": "3",
+            "attributes": {
+                "post_type": "video_external_file",
+                "post_file": {"duration": 735.6, "url": self.mux(self.FULL_PID)},
+                "video_preview": {"duration": 735.6, "full_content_duration": 735.6,
+                                  "url": self.mux(self.FULL_PID)},
+            },
+        }
+        post = extract_post(post_obj, {}, ExtractOptions(include_previews=False))
+        videos = [m for m in post.media if m.kind == "video"]
+        self.assertEqual(len(videos), 1)
+        self.assertFalse(videos[0].is_preview)
+        self.assertIn(self.FULL_PID, videos[0].url)
 
 
 if __name__ == "__main__":
