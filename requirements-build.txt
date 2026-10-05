@@ -1,0 +1,8 @@
+# 打包成独立 exe 所需的额外依赖
+#
+# 只在自己编译时用得到；普通运行不需要装。
+#   .venv\Scripts\python.exe -m pip install -r requirements-build.txt
+#   .venv\Scripts\python.exe tools\build_exe.py
+#
+# 或者直接双击 build.bat（会自动装好 pyinstaller）。
+pyinstaller>=6.6

@@ -1,0 +1,11 @@
+# Patreon 内容下载器 —— 运行依赖
+#
+# PySide6 提供 Qt 6 界面框架；其中 PySide6-Addons 包含 QtWebEngine，
+# 就是“内置浏览器”所需的组件（安装包较大，约 250 MB）。
+PySide6>=6.8,<6.13
+
+# HTTP 客户端
+requests>=2.31
+
+# 可选：如果要下载 YouTube / Vimeo 等外链视频，请另外安装 yt-dlp
+# yt-dlp>=2024.1.1

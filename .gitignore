@@ -1,0 +1,16 @@
+# 运行时数据（设置、登录凭证、下载记录、内置浏览器缓存）
+data/
+
+# 打包产物
+dist/
+build/
+*.spec.bak
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# 编辑器
+.vscode/
+.idea/

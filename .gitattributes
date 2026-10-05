@@ -1,0 +1,15 @@
+# 仓库内统一用 LF 存储，检出时按平台转换
+* text=auto
+
+# 批处理文件必须保持 CRLF，否则 cmd.exe 会解析出错（'et' 不是内部或外部命令）
+# 注意：这些文件同时是 GBK 编码，git 不会转码，只处理换行符，是安全的
+*.bat text eol=crlf
+
+# 二进制文件不要做任何转换
+*.png binary
+*.jpg binary
+*.ico binary
+*.exe binary
+*.dll binary
+*.pyd binary
+*.spec.bak binary
