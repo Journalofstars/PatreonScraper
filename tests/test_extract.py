@@ -25,7 +25,7 @@ from patreon_dl.extract import (
     filter_by_kind,
 )
 from patreon_dl.models import Campaign, PostItem
-from patreon_dl.naming import media_filename, post_directory
+from patreon_dl.naming import creator_directory, media_filename, post_directory
 from patreon_dl.patreon import parse_reference
 from patreon_dl.state import StateStore
 from patreon_dl.util import sanitize_filename, stable_url_key
@@ -435,6 +435,60 @@ class NamingTests(unittest.TestCase):
         item = MediaItem(url="https://x/a.jpg", kind="image", filename="photo.jpg")
         name = media_filename(self.cfg, self.campaign, self.post, item, 1)
         self.assertTrue(name.endswith(".jpg"))
+
+    # ------------------------------------------------- 多层目录模板
+    def test_nested_directory_template_creates_real_subfolders(self):
+        """{year}/{month}/… 必须真的分出多层，而不是被安全化成一个名字。"""
+        self.cfg.name_template = "{year}/{month}/{date}_{title}"
+        path = post_directory(self.cfg, self.campaign, self.post)
+        rel = os.path.relpath(path, self.cfg.output_dir)
+        parts = rel.split(os.sep)
+        self.assertEqual(parts[0], "My Creator")
+        self.assertEqual(parts[1], "2025")
+        self.assertEqual(parts[2], "05")
+        self.assertIn("2025-05-29", parts[3])
+        self.assertNotIn("_", parts[1])          # 没有被拼成 "2025_05_..."
+
+    def test_backslash_and_slash_are_equivalent(self):
+        self.cfg.name_template = "{year}/{month}"
+        with_slash = post_directory(self.cfg, self.campaign, self.post)
+        self.cfg.name_template = "{year}\\{month}"
+        with_backslash = post_directory(self.cfg, self.campaign, self.post)
+        self.assertEqual(with_slash, with_backslash)
+
+    def test_multi_level_creator_directory(self):
+        self.cfg.folder_template = "{vanity}/{campaign_id}"
+        path = creator_directory(self.cfg, self.campaign)
+        rel = os.path.relpath(path, self.cfg.output_dir)
+        self.assertEqual(rel.split(os.sep), ["mycreator", "1"])
+
+    def test_section_directory_can_be_nested(self):
+        from patreon_dl.naming import section_directory
+
+        self.cfg.section_template = "{index:02d}/{title}"
+        rel = section_directory(self.cfg, self.campaign, self.post, "Part A", 2)
+        self.assertEqual(rel.split(os.sep), ["02", "Part A"])
+
+    def test_templates_cannot_escape_output_dir(self):
+        """模板里的 .. 不能把文件写到下载目录外面去。"""
+        root = os.path.abspath(self.cfg.output_dir)
+        for template in ("../../evil", "..\\..\\evil", "{year}/../../x", ".."):
+            with self.subTest(template=template):
+                self.cfg.name_template = template
+                path = os.path.abspath(post_directory(self.cfg, self.campaign, self.post))
+                self.assertTrue(path.startswith(root), path)
+                self.cfg.folder_template = template
+                path = os.path.abspath(creator_directory(self.cfg, self.campaign))
+                self.assertTrue(path.startswith(root), path)
+                self.cfg.folder_template = "{creator}"
+
+    def test_filename_template_never_creates_folders(self):
+        from patreon_dl.models import MediaItem
+
+        item = MediaItem(url="https://x/a.jpg", kind="image", filename="sub/dir/photo.jpg")
+        name = media_filename(self.cfg, self.campaign, self.post, item, 1)
+        self.assertNotIn("/", name)
+        self.assertNotIn("\\", name)
 
 
 class UtilTests(unittest.TestCase):

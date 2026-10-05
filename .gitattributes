@@ -5,6 +5,9 @@
 # 注意：这些文件同时是 GBK 编码，git 不会转码，只处理换行符，是安全的
 *.bat text eol=crlf
 
+# shell 脚本必须保持 LF，否则 Linux / macOS 上会报 bad interpreter
+*.sh text eol=lf
+
 # 二进制文件不要做任何转换
 *.png binary
 *.jpg binary

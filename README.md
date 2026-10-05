@@ -44,6 +44,34 @@ python -m venv .venv
 .venv\Scripts\python.exe main.py
 ```
 
+### Linux / macOS
+
+程序本身是跨平台的（QtWebEngine、ffmpeg、yt-dlp 都有对应版本，
+代码里的 Windows 专用处理都用 `os.name` / `sys.platform` 做了守卫），
+但**目前只在 Windows 上实测过**。其它平台用附带的 shell 脚本：
+
+```bash
+chmod +x setup.sh run.sh   # 克隆后如果缺少可执行权限
+./setup.sh                 # 创建虚拟环境并安装依赖
+./run.sh                   # 启动程序
+```
+
+内置浏览器加载失败时，Ubuntu / Debian 通常需要补系统库：
+
+```bash
+sudo apt install libnss3 libxkbcommon-x11-0 libegl1 libgl1 libasound2
+```
+
+打包同理（PyInstaller 会产出对应平台的可执行文件）：
+
+```bash
+.venv/bin/python -m pip install -r requirements-build.txt
+.venv/bin/python tools/build_exe.py
+```
+
+> `tools/build_exe.py` 给产物写的中文启动脚本是 Windows 的 `.bat`，
+> 在其它平台可以忽略那一项。
+
 ## 使用
 
 ### 1. 登录
@@ -146,8 +174,17 @@ https://www.patreon.com/BBebe/posts/exclusive-videos-141949666?utm_medium=clipbo
 | 文件名 | `{index:02d}_{name}` | 额外 `{index}` `{name}` `{stem}` `{ext}` `{kind}` `{media_id}` |
 | 部分子目录 | `{index:02d}_{title}` | `{index}` `{title}` `{name}` `{section}` |
 
-想按年月分文件夹，把「作品目录」设成 `{year}-{month}\{date}_{title}`；
-不想要部分目录的序号，把「部分子目录」改成 `{title}`。
+**三个目录模板都支持多层**：用 `/` 或 `\` 分隔就会真的分出子文件夹
+（两种分隔符在 Windows 和 Linux 上等价）。例如「作品目录」设成
+`{year}/{month}/{date}_{title}`，结果是：
+
+```
+<下载目录>\<创作者>\2026\10\2026-10-05_标题\
+```
+
+文件名模板不支持分层（会被安全化成一个名字）。
+
+不想要部分目录的序号，把「部分子目录」改成 `{title}` 即可。
 
 ## 打包成独立 exe
 
@@ -214,6 +251,7 @@ dist\PatreonDownloader\PatreonDownloader.exe --selftest
 
 ```
 main.py  run.bat  run-debug.bat  setup.bat  build.bat  patreon_dl.spec
+         run.sh   setup.sh                              （Linux / macOS）
 patreon_dl\
 ├── config.py       配置与路径      ├── ui\
 ├── models.py       数据模型        │   ├── app.py             入口 / 自检

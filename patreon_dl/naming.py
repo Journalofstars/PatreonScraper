@@ -50,6 +50,33 @@ def _post_values(campaign: Campaign, post: PostItem) -> dict[str, Any]:
     }
 
 
+_SEGMENT_SPLIT = re.compile(r"[\\/]+")
+
+
+def split_template_segments(rendered: str) -> list[str]:
+    """把模板渲染结果按 ``/`` 或 ``\\`` 拆成多级目录名。
+
+    这样 ``{year}\\{month}\\{date}_{title}`` 在 Windows 和 Linux 上都能
+    真正分出多层文件夹，而不是被当成一个含非法字符的名字。
+    """
+    parts = [p.strip() for p in _SEGMENT_SPLIT.split(rendered or "")]
+    return [p for p in parts if p]
+
+
+def join_template_path(root: str, rendered: str, fallback: str = "untitled") -> str:
+    """把可能含多级分隔符的模板结果接到 ``root`` 下面，逐段安全化。"""
+    segments = split_template_segments(rendered)
+    if not segments:
+        segments = [fallback]
+    path = root
+    for index, segment in enumerate(segments):
+        name = sanitize_dirname(
+            segment, fallback if index == len(segments) - 1 else "folder"
+        )
+        path = os.path.join(path, name)
+    return path
+
+
 def creator_directory(config: AppConfig, campaign: Campaign) -> str:
     name = _render(
         config.folder_template,
@@ -60,7 +87,7 @@ def creator_directory(config: AppConfig, campaign: Campaign) -> str:
         },
         campaign.display_name,
     )
-    return os.path.join(config.output_dir, sanitize_dirname(name, f"campaign-{campaign.id}"))
+    return join_template_path(config.output_dir, name, f"campaign-{campaign.id}")
 
 
 def post_directory(config: AppConfig, campaign: Campaign, post: PostItem,
@@ -73,15 +100,14 @@ def post_directory(config: AppConfig, campaign: Campaign, post: PostItem,
     if not config.group_by_post:
         return base
     name = _render(config.name_template, _post_values(campaign, post), f"{post.date_key}_{post.safe_title}")
-    name = sanitize_dirname(name, f"post-{post.id}")
     if existing_owner and existing_owner != post.id:
         name = f"{name} [{post.id}]"
-    return os.path.join(base, name)
+    return join_template_path(base, name, f"post-{post.id}")
 
 
 def section_directory(config: AppConfig, campaign: Campaign, post: PostItem,
                       title: str, index: int) -> str:
-    """作品内部「一个部分」的子目录名（帖子含多个部分时用）。"""
+    """作品内部「一个部分」的子目录（相对作品目录，可能有多层）。"""
     values = _post_values(campaign, post)
     values.update(
         {
@@ -95,7 +121,13 @@ def section_directory(config: AppConfig, campaign: Campaign, post: PostItem,
     rendered = _render(
         config.section_template, values, "{index:02d}_{title}"
     )
-    return sanitize_dirname(rendered, f"part-{index:02d}")
+    segments = split_template_segments(rendered) or [f"part-{index:02d}"]
+    return os.path.join(
+        *[
+            sanitize_dirname(seg, f"part-{index:02d}" if i == len(segments) - 1 else "part")
+            for i, seg in enumerate(segments)
+        ]
+    )
 
 
 def media_filename(config: AppConfig, campaign: Campaign, post: PostItem,
