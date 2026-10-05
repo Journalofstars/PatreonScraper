@@ -186,6 +186,46 @@ class Campaign:
         return self.name or self.vanity or f"campaign-{self.id}"
 
 
+@dataclass
+class Collection:
+    """创作者整理的「合集」（把作品分组，比如「| Femdom |」）。
+
+    接口是 ``GET /api/collection/{id}``（**单数**，不是 collections）；
+    列出一个创作者的全部合集用 ``GET /api/collection?filter[campaign_id]=…``。
+    ``post_ids`` 保持创作者自定义的排序（``post_sort_type == "custom"``）。
+    """
+
+    id: str
+    title: str = ""
+    description: str = ""
+    campaign_id: str = ""
+    post_count: int = 0
+    post_ids: list[str] = field(default_factory=list)
+    thumbnail: str = ""
+    created_at: str = ""
+    sort_type: str = ""
+
+    @property
+    def display_name(self) -> str:
+        return (self.title or "").strip() or f"合集 {self.id}"
+
+    @property
+    def menu_label(self) -> str:
+        return f"{self.display_name}（{self.post_count} 篇）"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "title": self.title,
+            "description": self.description,
+            "campaign_id": self.campaign_id,
+            "post_count": self.post_count,
+            "post_ids": list(self.post_ids),
+            "created_at": self.created_at,
+            "sort_type": self.sort_type,
+        }
+
+
 def parse_datetime(value: str | None) -> datetime | None:
     """解析 Patreon 返回的 ISO 时间。"""
     if not value:

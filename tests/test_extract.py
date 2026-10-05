@@ -529,6 +529,13 @@ class ReferenceTests(unittest.TestCase):
             "&utm_campaign=postshare_creator&utm_content=join_link": ("post", "141949666"),
             # slug 里带数字，只能取最后一段数字
             "https://www.patreon.com/x/posts/day-2-of-30-141949666": ("post", "141949666"),
+            # 合集（注意接口路径是单数 collection）
+            "https://www.patreon.com/collection/2084280?view=expanded": ("collection", "2084280"),
+            "https://www.patreon.com/collection/2084280": ("collection", "2084280"),
+            "patreon.com/collection/2084280": ("collection", "2084280"),
+            # 合集列表页
+            "https://www.patreon.com/cw/BBebe/collections": ("collections", "BBebe"),
+            "https://www.patreon.com/BBebe/collections": ("collections", "BBebe"),
         }
         for raw, expected in cases.items():
             with self.subTest(raw=raw):
@@ -933,6 +940,100 @@ class SectionSplitTests(unittest.TestCase):
         self.assertLessEqual(len(name), 90)
         # 不应该出现半截单词（截断前最后一个字符不是字母中间）
         self.assertFalse(name.rstrip("_").endswith("Vt"))
+
+
+class CollectionTests(unittest.TestCase):
+    """合集（Collections）。
+
+    接口是 ``GET /api/collection/{id}``（**单数**），复数形式 404；
+    列出一个创作者的全部合集用 ``GET /api/collection?filter[campaign_id]=…``。
+    """
+
+    def collection_object(self, **attrs):
+        base = {
+            "title": "| Multiple Character Videos |",
+            "description": "",
+            "num_posts": 3,
+            "num_draft_posts": 0,
+            "num_scheduled_posts": 0,
+            "post_sort_type": "custom",
+            "post_ids": [165658323, 164828421, 162979279],
+            "created_at": "2026-03-31T18:54:02.000+00:00",
+            "thumbnail": {"original": "https://c10.patreonusercontent.com/a.jpg",
+                          "default": "https://c10.patreonusercontent.com/b.jpg"},
+        }
+        base.update(attrs)
+        return {"type": "collection", "id": "2084280", "attributes": base}
+
+    def test_collection_model_from_api_object(self):
+        from patreon_dl.patreon import PatreonClient
+
+        coll = PatreonClient._collection_from(self.collection_object(), "15006767")
+        self.assertEqual(coll.id, "2084280")
+        self.assertEqual(coll.title, "| Multiple Character Videos |")
+        self.assertEqual(coll.post_count, 3)
+        self.assertEqual(coll.campaign_id, "15006767")
+        self.assertEqual(coll.sort_type, "custom")
+        self.assertEqual(coll.post_ids, ["165658323", "164828421", "162979279"])
+        self.assertTrue(coll.thumbnail.endswith("b.jpg"))   # 优先 default
+
+    def test_collection_menu_label_includes_count(self):
+        from patreon_dl.patreon import PatreonClient
+
+        coll = PatreonClient._collection_from(self.collection_object(), "1")
+        self.assertIn("Multiple Character Videos", coll.menu_label)
+        self.assertIn("3 篇", coll.menu_label)
+
+    def test_collection_without_title_gets_fallback_name(self):
+        from patreon_dl.patreon import PatreonClient
+        from patreon_dl.models import Collection
+
+        coll = PatreonClient._collection_from(self.collection_object(title=""), "1")
+        self.assertEqual(coll.display_name, "合集 2084280")
+        self.assertEqual(Collection(id="9").display_name, "合集 9")
+
+    def test_collection_tolerates_missing_attributes(self):
+        from patreon_dl.patreon import PatreonClient
+
+        coll = PatreonClient._collection_from({"type": "collection", "id": "7"}, "1")
+        self.assertEqual(coll.id, "7")
+        self.assertEqual(coll.post_count, 0)
+        self.assertEqual(coll.post_ids, [])
+        self.assertEqual(coll.thumbnail, "")
+
+    def test_collection_to_dict_roundtrip(self):
+        from patreon_dl.patreon import PatreonClient
+
+        coll = PatreonClient._collection_from(self.collection_object(), "15006767")
+        payload = coll.to_dict()
+        self.assertEqual(payload["id"], "2084280")
+        self.assertEqual(payload["post_count"], 3)
+        self.assertEqual(len(payload["post_ids"]), 3)
+
+    def test_collection_posts_reuse_post_extraction(self):
+        """合集接口返回的作品，用同一套提取逻辑处理。"""
+        post_obj = post_object(
+            "165658323", {"images": link("553324771")}, [],
+            title="A video post", post_type="video_external_file",
+            content_json_string=self_rich_video_json(),
+        )
+        media_obj = media_object(
+            "553324771", media_type="image", mimetype="image/jpeg",
+            file_name="cover.jpg",
+            image_urls={"original": "https://c10.patreonusercontent.com/c.jpg"},
+        )
+        post = extract_post(
+            post_obj,
+            build_included_index({"included": [media_obj]}),
+        )
+        self.assertEqual(post.id, "165658323")
+        self.assertEqual(len(post.media), 1)
+        self.assertEqual(post.media[0].filename, "cover.jpg")
+
+
+def self_rich_video_json():
+    return json.dumps({"type": "doc", "content": [
+        {"type": "paragraph", "content": [{"type": "text", "text": "x"}]}]})
 
 
 if __name__ == "__main__":

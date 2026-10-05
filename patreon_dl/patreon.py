@@ -19,7 +19,7 @@ import requests
 from .config import USER_AGENT, AppConfig
 from .cookies import CookieRecord, apply_to_session, load_cookies
 from .extract import ExtractOptions, build_included_index, extract_posts
-from .models import Campaign, PostItem
+from .models import Campaign, Collection, PostItem
 
 BASE = "https://www.patreon.com"
 API = BASE + "/api"
@@ -32,6 +32,11 @@ POST_FIELDS = (
     "teaser_text,media,audio,video,comment_count,like_count,post_metadata,video_preview,"
     # 新版富文本正文：媒体以 media_id 内嵌在里面，不写进 fields 就完全拿不到
     "content_json_string"
+)
+
+# 合集接口的 include：把作品连同它们的媒体一次性取回来
+COLLECTION_INCLUDE = "posts," + ",".join(
+    "posts." + name for name in POST_INCLUDE.split(",")
 )
 
 CAMPAIGN_FIELDS = (
@@ -270,6 +275,135 @@ class PatreonClient:
 
         return resolve
 
+    # --------------------------------------------------------- 合集（Collections）
+    def list_collections(self, campaign_id: str) -> list[Collection]:
+        """列出某个创作者的全部合集。
+
+        ``GET /api/collection?filter[campaign_id]=…`` —— 注意路径是**单数**
+        ``collection``，复数形式会 404。
+        """
+        campaign_id = str(campaign_id or "").strip()
+        if not campaign_id:
+            return []
+        try:
+            payload = self.request(
+                "GET",
+                f"{API}/collection",
+                params={"filter[campaign_id]": campaign_id},
+                referer=f"{BASE}/",
+            )
+        except NotFoundError:
+            return []
+        items = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(items, list):
+            return []
+        return [
+            self._collection_from(obj, campaign_id)
+            for obj in items
+            if isinstance(obj, dict) and obj.get("id")
+        ]
+
+    def get_collection(self, collection_id: str) -> Collection:
+        """取单个合集（含 ``post_ids``，不含作品内容）。"""
+        payload = self.request(
+            "GET",
+            f"{API}/collection/{collection_id}",
+            params={"include": "campaign"},
+            referer=f"{BASE}/",
+        )
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, dict):
+            raise NotFoundError(f"找不到合集 {collection_id}")
+        included = build_included_index(payload)
+        rel = ((data.get("relationships") or {}).get("campaign") or {}).get("data") or {}
+        campaign_id = str(rel.get("id") or "") if isinstance(rel, dict) else ""
+        if not campaign_id:
+            for (obj_type, obj_id) in included:
+                if obj_type == "campaign":
+                    campaign_id = obj_id
+                    break
+        return self._collection_from(data, campaign_id)
+
+    def fetch_collection_posts(
+        self,
+        collection_id: str,
+        options: ExtractOptions | None = None,
+        creator: str = "",
+    ) -> tuple[Collection, list[PostItem], Campaign | None]:
+        """取一个合集的全部作品（含媒体）—— **一次请求**搞定。
+
+        ``GET /api/collection/{id}?include=posts,posts.images,…``
+        作品会按创作者自定义的顺序（``post_sort_type``）返回，本方法会重新排好序。
+        """
+        payload = self.request(
+            "GET",
+            f"{API}/collection/{collection_id}",
+            params={"include": COLLECTION_INCLUDE, "fields[post]": POST_FIELDS},
+            referer=f"{BASE}/",
+        )
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, dict):
+            raise NotFoundError(f"找不到合集 {collection_id}")
+
+        included = build_included_index(payload)
+        rel = ((data.get("relationships") or {}).get("campaign") or {}).get("data") or {}
+        campaign_id = str(rel.get("id") or "") if isinstance(rel, dict) else ""
+        if not campaign_id:
+            for (obj_type, obj_id) in included:
+                if obj_type == "campaign":
+                    campaign_id = obj_id
+                    break
+
+        collection = self._collection_from(data, campaign_id)
+
+        # 作者名
+        creator_name = creator.strip()
+        if not creator_name:
+            for obj in payload.get("included") or []:
+                if obj.get("type") == "user":
+                    attrs = obj.get("attributes") or {}
+                    creator_name = str(attrs.get("full_name") or attrs.get("vanity") or "")
+                    if creator_name:
+                        break
+
+        post_objs = [o for o in (payload.get("included") or [])
+                     if isinstance(o, dict) and o.get("type") == "post"]
+        # 按合集里创作者排的顺序重排
+        order = {str(pid): index for index, pid in enumerate(collection.post_ids)}
+        post_objs.sort(key=lambda obj: order.get(str(obj.get("id")), len(order) + 1))
+
+        resolver = (
+            self.make_media_resolver(included) if self.config.fetch_inline_media else None
+        )
+        posts = extract_posts(
+            {"data": post_objs, "included": payload.get("included")},
+            options, campaign_id, creator_name, media_resolver=resolver,
+        )
+        campaign = self._campaign_from_included(included, campaign_id, creator_name)
+        return collection, posts, campaign
+
+    @staticmethod
+    def _collection_from(obj: dict[str, Any], campaign_id: str = "") -> Collection:
+        attrs = obj.get("attributes") if isinstance(obj.get("attributes"), dict) else {}
+        thumb = attrs.get("thumbnail") if isinstance(attrs.get("thumbnail"), dict) else {}
+        thumb_url = ""
+        for key in ("default", "original", "url", "thumbnail"):
+            value = thumb.get(key)
+            if isinstance(value, str) and value.startswith("http"):
+                thumb_url = value
+                break
+        return Collection(
+            id=str(obj.get("id") or ""),
+            title=str(attrs.get("title") or ""),
+            description=str(attrs.get("description") or ""),
+            campaign_id=str(campaign_id or ""),
+            post_count=int(attrs.get("num_posts") or 0),
+            post_ids=[str(x) for x in (attrs.get("post_ids") or [])],
+            thumbnail=thumb_url,
+            created_at=str(attrs.get("created_at") or ""),
+            sort_type=str(attrs.get("post_sort_type") or ""),
+        )
+
     # --------------------------------------------------------- 创作者解析
     def resolve_campaign(self, reference: str) -> Campaign:
         """支持：纯数字 ID、creator 主页 URL、vanity 名称、作品 URL。
@@ -290,6 +424,11 @@ class PatreonClient:
             return self.campaign_of_post(values[0])
         if kind == "user_id":
             return self.campaign_of_user(values[0])
+        if kind == "collection":
+            collection = self.get_collection(values[0])
+            if not collection.campaign_id:
+                raise NotFoundError(f"合集 {values[0]} 没有关联到任何创作者")
+            return self.get_campaign(collection.campaign_id)
 
         problems: list[str] = []
         for vanity in values:
@@ -640,6 +779,19 @@ def parse_reference_all(reference: str) -> tuple[str, list[str]]:
     match = re.search(r"/posts/(?:[^/?#]*-)?(\d+)", "/" + path)
     if match:
         return "post", [match.group(1)]
+
+    # /collection/<id> —— 合集（注意是单数 collection）
+    match = re.search(r"/collection/(\d+)", "/" + path)
+    if match:
+        return "collection", [match.group(1)]
+
+    # /<vanity>/collections —— 想浏览该创作者的全部合集
+    segments = [s for s in path.split("/") if s]
+    if len(segments) >= 2 and segments[-1].lower() == "collections":
+        head = [s for s in segments[:-1] if s.lower() not in NON_VANITY_SEGMENTS]
+        tail = [s for s in segments[:-1] if s not in head]
+        if head or tail:
+            return "collections", head + tail
 
     # /user?u=<id>
     match = re.search(r"(?:^|[?&])u=(\d+)", query)

@@ -41,6 +41,17 @@ def resolve_post_id(reference: str) -> str:
     raise SystemExit(f"无法从 {reference!r} 里解析出作品 ID，请填作品链接或纯数字 ID")
 
 
+def resolve_collection_id(reference: str) -> str:
+    """从合集链接或纯数字里取出合集 ID。"""
+    reference = (reference or "").strip()
+    if re.fullmatch(r"\d+", reference):
+        return reference
+    kind, value = parse_reference(reference)
+    if kind == "collection" and value:
+        return value
+    raise SystemExit(f"无法从 {reference!r} 里解析出合集 ID，请填合集链接或纯数字 ID")
+
+
 def print_post(post, index: str = "      ·") -> int:
     """打印一篇作品及其媒体，返回可下载条目数。"""
     config = AppConfig()
@@ -62,6 +73,10 @@ def main() -> int:
     parser.add_argument("creator", nargs="?", default="rossdraws",
                         help="创作者主页地址 / 名字 / 数字 ID；配合 --post 时填作品链接或 ID")
     parser.add_argument("--post", action="store_true", help="只抓单篇作品")
+    parser.add_argument("--collection", action="store_true",
+                        help="只抓某个合集（第一个参数填合集链接或 ID）")
+    parser.add_argument("--collections", action="store_true",
+                        help="只列出该创作者的全部合集，不抓作品")
     parser.add_argument("--download", action="store_true", help="同时验证下载")
     parser.add_argument("--count", type=int, default=5, help="检查多少篇作品")
     parser.add_argument("--videos", type=int, default=1, help="下载验证时最多下几个视频")
@@ -80,16 +95,43 @@ def main() -> int:
         print("没有本地凭证，本次只检查公开内容")
 
     # 步骤编号随模式变化
-    steps = (["只抓单篇作品", "检查媒体解析"] if args.post
-             else ["解析创作者", "抓取作品列表", "检查媒体解析"])
+    if args.collection:
+        steps = ["只抓单个合集", "检查媒体解析"]
+    elif args.post:
+        steps = ["只抓单篇作品", "检查媒体解析"]
+    else:
+        steps = ["解析创作者", "抓取作品列表", "检查媒体解析"]
     if args.download:
         steps.append("下载验证")
 
     def step(index: int) -> str:
         return f"[{index}/{len(steps)}] {steps[index - 1]}"
 
+    # ---------------------------------------------------------- 列出合集
+    if args.collections:
+        print(f"\n{step(1)} {args.creator!r} …")
+        campaign = client.resolve_campaign(args.creator)
+        collections = client.list_collections(campaign.id)
+        print(f"      → {campaign.display_name} 共 {len(collections)} 个合集")
+        for item in collections:
+            print(f"        {item.id:>9}  {item.post_count:>4} 篇  {item.display_name}")
+        print("\n✅ 合集列表读取正常")
+        return 0
+
     # ---------------------------------------------------------- 1. 定位
-    if args.post:
+    if args.collection:
+        collection_id = resolve_collection_id(args.creator)
+        print(f"\n{step(1)} {collection_id}（只需 1 个请求）…")
+        collection, posts, campaign = client.fetch_collection_posts(collection_id)
+        if campaign is None:
+            campaign = Campaign(id=collection.campaign_id or "",
+                                name=f"campaign-{collection.campaign_id}")
+        print(f"      → 合集「{collection.display_name}」属于 {campaign.display_name}"
+              f" ({campaign.id})")
+        print(f"        接口报告 {collection.post_count} 篇，实际取回 {len(posts)} 篇，"
+              f"排序方式 {collection.sort_type or '-'}")
+        client_note = "（只取了这一个合集）"
+    elif args.post:
         post_id = resolve_post_id(args.creator)
         print(f"\n{step(1)} {post_id}（只需 1 个请求）…")
         post, campaign = client.fetch_post(post_id)
@@ -114,7 +156,7 @@ def main() -> int:
         client_note = ""
 
     # ---------------------------------------------------------- 媒体解析
-    detail_index = 2 if args.post else 3
+    detail_index = 2
     print(f"\n{step(detail_index)} 前 {args.count} 篇{client_note} …")
     total_media = 0
     for post in posts[: args.count]:

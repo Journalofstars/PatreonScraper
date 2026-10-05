@@ -17,6 +17,7 @@
 | 内置浏览器登录 | 程序内登录 patreon.com，自动抓取 Cookie（含 HttpOnly 的 `session_id`），持久化保存，下次免登录 |
 | 全量抓取 | 输入创作者主页 / 名字 / 数字 ID，分页抓取全部作品 |
 | 单篇抓取 | 粘贴任意作品链接（含分享链接），只抓这一篇并自动勾选，整场只要 **1 个请求** |
+| 合集浏览 | 按创作者整理的合集（Collections）筛选作品；粘贴合集链接可**一次请求**抓回整个合集 |
 | 内容识别 | 图片（原图 / 大图 / 中图）、mux 完整版视频、直链视频、音频、附件 |
 | 正文内嵌媒体 | 新版编辑器把多个视频写进正文（如「索引贴」），程序解析正文并逐个取回 |
 | 按部分分目录 | 一篇含多个部分时，按正文标题自动分组，每组一个子目录 |
@@ -107,10 +108,23 @@ https://www.patreon.com/BBebe/posts/exclusive-videos-141949666?utm_medium=clipbo
 
 → 只请求这一篇，表格里只有它，并且**自动勾选**，直接点下载即可。
 
-| | 模式 A（主页） | 模式 B（单篇） |
-| --- | --- | --- |
-| 请求数 | 1 个主页 + 每页 1 个列表请求 | **1 个** |
-| 适合 | 批量备份、增量同步 | 只想拿某一篇 |
+**模式 C：抓某个合集**
+
+合集（Collections）是创作者给自己作品做的分类，比如这个创作者有
+`| Femdom |`（70 篇）、`| Exclusive Videos |`（59 篇）、`| Other K!nks |`（71 篇）。
+两种用法：
+
+- **直接粘合集链接**（`https://www.patreon.com/collection/2084280`）→
+  **一次请求**抓回该合集全部作品，并自动在下拉框里选中它；
+- 或者先加载创作者，再用表格上方的 **「合集」下拉框**切换。
+  切到还没加载过的合集会自动去抓；切回「全部作品」看全部。
+
+> 合集链接里带 `?view=expanded` 之类的参数不影响。
+
+| | 模式 A（主页） | 模式 B（单篇） | 模式 C（合集） |
+| --- | --- | --- | --- |
+| 请求数 | 1 个主页 + 每页 1 个 | **1 个** | **1 个**（另加 1 个列合集） |
+| 适合 | 批量备份、增量同步 | 只想拿某一篇 | 只想拿某一类（按题材/系列） |
 
 > `/c/`、`/cw/`、`/user` 这类路径前缀会自动去掉，跳转也会自动跟随；
 > Patreon 分享按钮带的 `?utm_*` 参数一律忽略，不影响结果。
@@ -220,6 +234,12 @@ dist\PatreonDownloader\PatreonDownloader.exe --selftest
 程序会自动解析并逐个取回（设置里「正文内嵌媒体」保持开启）。
 想给每个视频单独一个文件夹，再打开「帖子内含多个部分时…」。
 
+**合集里的作品会不会抓不到？**
+不会——合集是创作者对**已有作品**的分类，里面的作品本来就在主页列表里
+（实测这个创作者 18 个合集、去重 133 篇，100% 都在主页列表的 152 篇内）。
+合集的价值在于**按题材挑**，比如只下 `| Femdom |` 那 70 篇。
+界面上的「合集」下拉框就是干这个的；粘合集链接还能少跑几个请求。
+
 **视频只有几十秒？**
 确认设置里 **「视频优先下载 mux 完整版」已勾选**。仍然拿不到，通常说明该作品对你不可见。
 
@@ -244,6 +264,8 @@ dist\PatreonDownloader\PatreonDownloader.exe --selftest
 
 ```bat
 .venv\Scripts\python.exe tests\live_check.py https://www.patreon.com/cw/BBebe
+.venv\Scripts\python.exe tests\live_check.py https://www.patreon.com/cw/BBebe --collections
+.venv\Scripts\python.exe tests\live_check.py "https://www.patreon.com/collection/2084280" --collection --download
 .venv\Scripts\python.exe tests\live_check.py "<作品链接>" --post --download
 ```
 

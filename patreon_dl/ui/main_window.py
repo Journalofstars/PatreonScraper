@@ -38,7 +38,7 @@ from ..config import AppConfig, ensure_dirs
 from ..cookies import CookieRecord, load_cookies
 from ..downloader import TaskResult
 from ..extract import ExtractOptions, filter_by_kind
-from ..models import Campaign, PostItem
+from ..models import Campaign, Collection, PostItem
 from ..patreon import PatreonError, parse_reference_all
 from ..state import StateStore
 from ..util import human_size
@@ -75,6 +75,8 @@ class MainWindow(QMainWindow):
         self.download_worker: DownloadWorker | None = None
         self.check_worker: SessionCheckWorker | None = None
         self._detected_post_id: str | None = None
+        self._collections: list[Collection] = []
+        self._suppress_collection_fetch = False
         self._preview_loaders: set[PreviewLoader] = set()
         self._preview_cache: dict[str, QPixmap] = {}
         self._preview_source: QPixmap | None = None
@@ -226,6 +228,22 @@ class MainWindow(QMainWindow):
         self.pending_check.toggled.connect(self._apply_filter)
         row.addWidget(self.pending_check)
         box.addLayout(row)
+
+        # 合集行：同一个创作者的作品按他整理的合集筛选
+        row_c = QHBoxLayout()
+        row_c.addWidget(QLabel("合集"))
+        self.collection_combo = QComboBox()
+        self.collection_combo.setMinimumWidth(280)
+        self.collection_combo.setToolTip(
+            "按创作者整理的合集筛选作品。\n"
+            "也可以直接把合集链接（patreon.com/collection/…）粘到上面的输入框。"
+        )
+        self.collection_combo.currentIndexChanged.connect(self._on_collection_changed)
+        row_c.addWidget(self.collection_combo, 1)
+        self.collection_hint = QLabel("")
+        self.collection_hint.setProperty("hint", True)
+        row_c.addWidget(self.collection_hint)
+        box.addLayout(row_c)
 
         # 批量操作行
         row2 = QHBoxLayout()
@@ -489,6 +507,8 @@ class MainWindow(QMainWindow):
     def _on_fetch(self) -> None:
         reference = self.creator_edit.text().strip()
         single_post_id: str | None = None
+        collection_id: str | None = None
+
         if self.single_post_check.isChecked():
             if not self._detected_post_id:
                 QMessageBox.information(
@@ -500,10 +520,25 @@ class MainWindow(QMainWindow):
                 return
             single_post_id = self._detected_post_id
             reference = reference or single_post_id
+        elif reference:
+            # 合集链接：直接抓这个合集（一次请求就够）
+            try:
+                kind, values = parse_reference_all(reference)
+            except PatreonError:
+                kind, values = "", []
+            if kind == "collection" and values:
+                collection_id = values[0]
 
-        if not reference:
+        if not reference and not collection_id:
             QMessageBox.information(self, "请输入创作者", "请先填写创作者主页地址或名字。")
             return
+
+        self._start_fetch(reference=reference, single_post_id=single_post_id,
+                          collection_id=collection_id)
+
+    def _start_fetch(self, reference: str = "", single_post_id: str | None = None,
+                     collection_id: str | None = None,
+                     fetch_collections: bool = True) -> None:
         if self.fetch_worker is not None and self.fetch_worker.isRunning():
             self.fetch_worker.stop()
             self.fetch_worker.wait(3000)
@@ -513,18 +548,27 @@ class MainWindow(QMainWindow):
         self.posts = []
         self.campaign = None
         self._status_cache.clear()
+        if collection_id is None:
+            self._set_collections([])
         self.progress.setRange(0, 0)
+
         if single_post_id:
             self.log(f"开始抓取单篇作品：{single_post_id}")
             self.status_label.setText(f"正在抓取单篇作品 {single_post_id} …")
+        elif collection_id:
+            self.log(f"开始抓取合集：{collection_id}")
+            self.status_label.setText(f"正在抓取合集 {collection_id} …")
         else:
             self.log(f"开始抓取：{reference}")
 
         self.fetch_worker = FetchWorker(
             self.config, self.cookies, reference, self._extract_options(),
-            single_post_id=single_post_id, parent=self,
+            single_post_id=single_post_id, collection_id=collection_id,
+            fetch_collections=fetch_collections, parent=self,
         )
         self.fetch_worker.campaign_ready.connect(self._on_campaign_ready)
+        self.fetch_worker.collections_ready.connect(self._on_collections_ready)
+        self.fetch_worker.collection_ready.connect(self._on_collection_ready)
         self.fetch_worker.posts_batch.connect(self._on_posts_batch)
         self.fetch_worker.page_progress.connect(self._on_fetch_progress)
         self.fetch_worker.inline_progress.connect(self._on_inline_progress)
@@ -616,7 +660,90 @@ class MainWindow(QMainWindow):
             keyword=self.filter_edit.text(),
             kinds=kinds,
             only_pending=self.pending_check.isChecked(),
+            collection_ids=self._selected_collection_ids(),
         )
+        self._update_collection_hint()
+
+    # ---------------------------------------------------------- 合集
+    def _current_collection(self) -> Collection | None:
+        return self.collection_combo.currentData()
+
+    def _selected_collection_ids(self) -> set[str] | None:
+        """当前选中的合集包含哪些作品 id；选「全部」时返回 None。"""
+        collection = self._current_collection()
+        if collection is None:
+            return None
+        return set(collection.post_ids)
+
+    def _set_collections(self, collections: list[Collection]) -> None:
+        """填充合集下拉框，默认选中「全部作品」。"""
+        self._collections = list(collections)
+        blocked = self.collection_combo.blockSignals(True)
+        try:
+            self.collection_combo.clear()
+            self.collection_combo.addItem(
+                f"全部作品（{len(collections)} 个合集）" if collections else "全部作品", None
+            )
+            for collection in collections:
+                self.collection_combo.addItem(collection.menu_label, collection)
+        finally:
+            self.collection_combo.blockSignals(blocked)
+        self.collection_combo.setEnabled(bool(collections))
+        self._update_collection_hint()
+
+    def _select_collection(self, collection_id: str) -> bool:
+        """在下拉框里选中指定合集；找不到返回 False。"""
+        for index in range(self.collection_combo.count()):
+            data = self.collection_combo.itemData(index)
+            if isinstance(data, Collection) and data.id == str(collection_id):
+                self.collection_combo.setCurrentIndex(index)
+                return True
+        return False
+
+    def _update_collection_hint(self) -> None:
+        if not getattr(self, "_collections", None):
+            self.collection_hint.setText("")
+            return
+        collection = self._current_collection()
+        if collection is None:
+            self.collection_hint.setText(f"共 {len(self._collections)} 个合集")
+            return
+        loaded_ids = {p.id for p in self.posts}
+        loaded = sum(1 for pid in collection.post_ids if pid in loaded_ids)
+        total = collection.post_count or len(collection.post_ids)
+        text = f"合集内 {loaded}/{total} 篇已加载"
+        if loaded < total:
+            text += "（切到「全部作品」再抓一次可补齐）"
+        self.collection_hint.setText(text)
+
+    def _on_collections_ready(self, collections: list[Collection]) -> None:
+        self._set_collections(collections)
+        self.log(f"该创作者有 {len(collections)} 个合集")
+
+    def _on_collection_ready(self, collection: Collection) -> None:
+        """抓取完某个合集后，自动在下拉框里选中它。"""
+        self._suppress_collection_fetch = True
+        try:
+            if not self._select_collection(collection.id):
+                self._set_collections([collection])
+                self._select_collection(collection.id)
+        finally:
+            self._suppress_collection_fetch = False
+        self._apply_filter()
+        self.log(f"合集「{collection.display_name}」：{collection.post_count} 篇")
+
+    def _on_collection_changed(self, _index: int) -> None:
+        """切换合集：如果这个合集的作品一篇都没加载，就按合集抓回来。"""
+        if self._suppress_collection_fetch:
+            return
+        collection = self._current_collection()
+        if collection is not None and collection.post_ids:
+            loaded_ids = {p.id for p in self.posts}
+            if not any(pid in loaded_ids for pid in collection.post_ids):
+                self.log(f"正在抓取合集「{collection.display_name}」…")
+                self._start_fetch(collection_id=collection.id, fetch_collections=False)
+                return
+        self._apply_filter()
 
     def _select_pending(self) -> None:
         """把所有还没下完的作品勾选上。"""

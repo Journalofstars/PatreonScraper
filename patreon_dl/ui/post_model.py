@@ -86,7 +86,8 @@ class PostTableModel(QAbstractTableModel):
         self._index_of = {post.id: i for i, post in enumerate(self._all)}
 
     def apply_filter(self, keyword: str = "", kinds: set[str] | None = None,
-                     only_pending: bool = False) -> None:
+                     only_pending: bool = False,
+                     collection_ids: set[str] | None = None) -> None:
         keyword = (keyword or "").strip().lower()
         self.beginResetModel()
         rows: list[PostItem] = []
@@ -94,6 +95,8 @@ class PostTableModel(QAbstractTableModel):
             if keyword and keyword not in post.safe_title.lower() and keyword not in post.id:
                 continue
             if kinds and post.post_type not in kinds:
+                continue
+            if collection_ids is not None and post.id not in collection_ids:
                 continue
             if only_pending and self._is_complete(post):
                 continue

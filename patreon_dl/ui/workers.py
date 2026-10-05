@@ -21,9 +21,11 @@ def clone_config(config: AppConfig) -> AppConfig:
 
 
 class FetchWorker(QThread):
-    """解析创作者并分页抓取作品列表；也可以只抓单篇作品。"""
+    """解析创作者并分页抓取作品列表；也可以只抓单篇作品或某个合集。"""
 
     campaign_ready = Signal(object)      # Campaign
+    collections_ready = Signal(object)   # list[Collection]
+    collection_ready = Signal(object)    # Collection —— 让界面选中它
     posts_batch = Signal(object)         # list[PostItem]
     page_progress = Signal(int, int)     # 已抓取, 总数
     inline_progress = Signal(int)        # 已取回多少个「正文内嵌媒体」
@@ -31,13 +33,17 @@ class FetchWorker(QThread):
     completed = Signal(int)              # 累计作品数
 
     def __init__(self, config: AppConfig, cookies: list[CookieRecord], reference: str,
-                 options: ExtractOptions, single_post_id: str | None = None, parent=None):
+                 options: ExtractOptions, single_post_id: str | None = None,
+                 collection_id: str | None = None, fetch_collections: bool = True,
+                 parent=None):
         super().__init__(parent)
         self.config = clone_config(config)
         self.cookies = cookies
         self.reference = reference
         self.options = options
         self.single_post_id = (single_post_id or "").strip() or None
+        self.collection_id = (collection_id or "").strip() or None
+        self.fetch_collections = fetch_collections
         self._stop = False
         self._total = 0
 
@@ -55,9 +61,13 @@ class FetchWorker(QThread):
             if self.single_post_id:
                 self._run_single(client)
                 return
+            if self.collection_id:
+                self._run_collection(client)
+                return
 
             campaign = client.resolve_campaign(self.reference)
             self.campaign_ready.emit(campaign)
+            self._emit_collections(client, campaign.id)
 
             for batch in client.iter_posts(
                 campaign.id,
@@ -80,6 +90,17 @@ class FetchWorker(QThread):
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(f"抓取失败：{exc}")
 
+    def _emit_collections(self, client: PatreonClient, campaign_id: str) -> None:
+        """顺带把创作者的合集列出来，失败不影响主流程。"""
+        if not self.fetch_collections or not campaign_id:
+            return
+        try:
+            collections = client.list_collections(campaign_id)
+        except PatreonError:
+            return
+        if collections:
+            self.collections_ready.emit(collections)
+
     def _run_single(self, client: PatreonClient) -> None:
         """只抓取指定的一篇作品（只需 1 个请求）。"""
         post_id = str(self.single_post_id)
@@ -96,6 +117,28 @@ class FetchWorker(QThread):
         self._total = 1
         self.page_progress.emit(1, 1)
         self.completed.emit(1)
+
+    def _run_collection(self, client: PatreonClient) -> None:
+        """只抓某个合集 —— 一次请求就能拿回它的全部作品（含媒体）。"""
+        collection_id = str(self.collection_id)
+        self.page_progress.emit(0, 1)
+        collection, posts, campaign = client.fetch_collection_posts(
+            collection_id, self.options
+        )
+        if campaign is None:
+            campaign = Campaign(
+                id=collection.campaign_id or "",
+                name=f"campaign-{collection.campaign_id}",
+                vanity="",
+            )
+        self.campaign_ready.emit(campaign)
+        self._emit_collections(client, campaign.id)
+        self.collection_ready.emit(collection)
+        if posts:
+            self.posts_batch.emit(posts)
+        self._total = len(posts)
+        self.page_progress.emit(len(posts), max(len(posts), collection.post_count))
+        self.completed.emit(len(posts))
 
 
 class SessionCheckWorker(QThread):

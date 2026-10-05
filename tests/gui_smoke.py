@@ -54,6 +54,24 @@ def build_fake_posts(count: int = 6):
     return posts
 
 
+def build_fake_collections():
+    from patreon_dl.models import Collection
+
+    return [
+        Collection(id="2084280", title="| Multiple Character Videos |", post_count=12,
+                   campaign_id="122089", post_ids=[str(1000 + i) for i in range(6)],
+                   sort_type="custom"),
+        Collection(id="1798655", title="| Femdom |", post_count=70,
+                   campaign_id="122089", post_ids=[str(1000 + i) for i in range(6)],
+                   sort_type="custom"),
+        Collection(id="1793962", title="| Exclusive Videos |", post_count=59,
+                   campaign_id="122089", post_ids=[str(1000 + i) for i in range(3)],
+                   sort_type="custom"),
+        Collection(id="2077477", title="Comic / Doujinshi / Vtuber Art", post_count=52,
+                   campaign_id="122089", post_ids=[], sort_type="custom"),
+    ]
+
+
 def main() -> int:
     out_dir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "data", "shots")
     os.makedirs(out_dir, exist_ok=True)
@@ -81,6 +99,41 @@ def main() -> int:
     window._on_posts_batch(posts)
     window._on_fetch_completed(len(posts))
     app.processEvents()
+
+    # 合集下拉框：填充 + 过滤
+    window._on_collections_ready(build_fake_collections())
+    app.processEvents()
+    checks = [
+        ("合集下拉框条目数 = 合集数 + 1（全部作品）",
+         window.collection_combo.count() == 5),
+        ("默认选中「全部作品」，表格显示全部作品",
+         window._current_collection() is None and window.post_model.rowCount() == 6),
+    ]
+    # 选中「| Femdom |」（6 篇）后表格应只剩它包含的作品
+    window._select_collection("1798655")
+    app.processEvents()
+    checks.append(("选中合集后表格被过滤",
+                   window.post_model.rowCount() == 6
+                   and window._selected_collection_ids() is not None))
+    # 选中只有一个 post 的合集
+    window._select_collection("1793962")
+    app.processEvents()
+    checks.append(("只有 3 篇的合集 -> 表格 3 行", window.post_model.rowCount() == 3))
+    # 合集里没有的作品
+    window._select_collection("2077477")
+    app.processEvents()
+    checks.append(("空 post_ids 的合集 -> 表格 0 行", window.post_model.rowCount() == 0))
+    # 回到全部
+    window.collection_combo.setCurrentIndex(0)
+    app.processEvents()
+    checks.append(("切回「全部作品」-> 6 行", window.post_model.rowCount() == 6))
+    checks.append(("合集提示文字非空", bool(window.collection_hint.text())))
+
+    for label, ok in checks:
+        print(f"  {'✅' if ok else '❌'} {label}")
+    if not all(ok for _label, ok in checks):
+        print("❌ 合集下拉框测试未通过")
+        return 1
 
     # 「只抓这一篇」的自动识别
     checks = []
