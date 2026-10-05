@@ -93,6 +93,7 @@ class PostItem:
 
     id: str
     title: str = ""
+    site: str = "patreon"               # 内容来源站点：patreon / joi
     published_at: str = ""
     edited_at: str = ""
     post_type: str = ""
@@ -121,8 +122,14 @@ class PostItem:
 
     @property
     def date_key(self) -> str:
+        """命名模板里的 ``{date}``。
+
+        没有发布日期时返回**空串**而不是 ``0000-00-00``：某些站点（例如
+        JOI Database）列表页不提供日期，占位符会污染文件夹名，
+        而空串会被 ``naming._render()`` 连同多余的分隔符一起清掉。
+        """
         dt = self.published_date
-        return dt.strftime("%Y-%m-%d") if dt else "0000-00-00"
+        return dt.strftime("%Y-%m-%d") if dt else ""
 
     @property
     def counts(self) -> dict[str, int]:

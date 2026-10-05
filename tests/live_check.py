@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from patreon_dl.config import AppConfig
 from patreon_dl.cookies import has_session, load_cookies
 from patreon_dl.extract import ExtractOptions, filter_by_kind
+from patreon_dl.joi import is_joi_reference
 from patreon_dl.models import Campaign
 from patreon_dl.patreon import PatreonClient, parse_reference
 from patreon_dl.util import human_size
@@ -106,6 +107,61 @@ def main() -> int:
 
     def step(index: int) -> str:
         return f"[{index}/{len(steps)}] {steps[index - 1]}"
+
+    # ---------------------------------------------------------- JOI Database
+    # 输入里带 the-joi-database.com 就自动走 JOI 分支，不用额外开关
+    if is_joi_reference(args.creator):
+        from patreon_dl.joi import JoiClient, parse_joi_reference
+
+        kind, value = parse_joi_reference(args.creator)
+        joi = JoiClient(config)
+        print(f"\n{step(1)} JOI Database {kind} {value} …")
+        campaign = joi.fetch_creator(args.creator)
+        print(f"      → {campaign.display_name} (profile {campaign.id}, "
+              f"订阅者 {campaign.patron_count})")
+
+        print(f"\n{step(2)} …")
+        batches = list(joi.iter_posts(campaign.id, reference=args.creator,
+                                      on_page=lambda f, t: None))
+        posts = [p for b in batches for p in b]
+        print(f"      → {len(batches)} 批，共 {len(posts)} 个视频")
+
+        print(f"\n{step(3)} 前 {args.count} 个 …")
+        total_media = 0
+        for post in posts[: args.count]:
+            total_media += print_post(post)
+        print(f"      → 共解析出 {total_media} 个可下载条目")
+
+        if not args.download:
+            print("\n（加 --download 可以继续验证下载链路）")
+            print("\n✅ JOI Database 抓取链路正常")
+            return 0
+
+        print(f"\n{step(4)} 下载验证（挑最短的一个，省流量）…")
+        from patreon_dl.downloader import DownloadEngine, build_tasks
+        from patreon_dl.state import StateStore
+
+        target = tempfile.mkdtemp(prefix="joi_check_")
+        config.output_dir = target
+        config.max_workers = 2
+        print(f"      临时目录：{target}")
+        shortest = min(posts, key=lambda p: p.media[0].duration or 9e9)
+        print(f"      目标：{shortest.title[:60]} "
+              f"（{shortest.media[0].duration:.0f} 秒）")
+        state = StateStore(os.path.join(target, "state.json"), output_dir=target)
+        tasks = build_tasks(config, campaign, [shortest], state)
+        engine = DownloadEngine(config, state, [],
+                                on_log=lambda m: print(f"      [dl] {m}"))
+        results = engine.run(tasks)
+        ok = 0
+        for result in results:
+            print(f"      {result.status} {result.size:,} 字节 "
+                  f"{(result.path or '')[-60:]}")
+            if result.status == "done" and result.size > 0:
+                ok += 1
+        print(f"\n{'✅' if ok else '❌'} 下载了 {ok}/{len(results)} 个文件"
+              f"（临时目录：{target}）")
+        return 0 if ok else 1
 
     # ---------------------------------------------------------- 列出合集
     if args.collections:

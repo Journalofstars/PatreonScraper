@@ -14,14 +14,23 @@ _WIN_FORBIDDEN = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
 def _render(template: str, values: dict[str, Any], fallback: str) -> str:
-    """渲染模板；模板出错时退回到 fallback。"""
+    """渲染模板；模板出错时退回到 fallback。
+
+    渲染后会清掉**因字段为空而留下的分隔符**：某些站点没有发布日期，
+    ``"{date}_{title}"`` 会渲染成 ``"_标题"``，这里把它收成 ``"标题"``。
+    只处理开头和结尾，中间的 ``_`` 是标题自带的，不能动。
+    """
     template = (template or "").strip() or fallback
     try:
         rendered = template.format_map(_SafeDict(values))
     except (KeyError, IndexError, ValueError, AttributeError):
         rendered = fallback.format_map(_SafeDict(values))
     rendered = rendered.strip()
+    rendered = _EDGE_SEPARATORS.sub("", rendered)
     return rendered or fallback
+
+
+_EDGE_SEPARATORS = re.compile(r"^[\s_\-]+|[\s_\-]+$")
 
 
 class _SafeDict(dict):
@@ -40,6 +49,7 @@ def _post_values(campaign: Campaign, post: PostItem) -> dict[str, Any]:
         "campaign_id": campaign.id,
         "post_id": post.id,
         "title": post.safe_title,
+        "site": post.site or "patreon",
         "date": post.date_key,
         "datetime": date.strftime("%Y-%m-%d_%H%M") if date else "0000-00-00_0000",
         "year": date.strftime("%Y") if date else "0000",

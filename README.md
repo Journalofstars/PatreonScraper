@@ -1,12 +1,19 @@
 # Patreon 内容下载器
 
-用 **Python + PySide6 (Qt 6)** 写的桌面程序，批量抓取并下载 Patreon 创作者的作品——图片、视频、音频、附件都支持。
+用 **Python + PySide6 (Qt 6)** 写的桌面程序，批量抓取并下载创作者的作品——图片、视频、音频、附件都支持。
 
 程序内置 **QtWebEngine 浏览器**：在里面登录 Patreon，自动捕获 `session_id` 等凭证并保存在本机，之后就能访问你**有权访问**的付费内容。
 
+目前支持两个站点：
+
+| 站点 | 输入 | 登录 |
+| --- | --- | --- |
+| **Patreon** | 主页链接、创作者名字、作品链接、合集链接、数字 ID | 需要（内置浏览器） |
+| **the-joi-database.com** | 作者页 `/profile/…`、视频页 `/watch/…`、播放列表 `/playlist/…` | 免登录 |
+
 ![主界面](screenshots/gui_dark.png)
 
-> ⚠️ 仅供备份**你自己有权访问**的内容。请遵守 Patreon 服务条款与创作者的作品许可，不要用于传播或转售。
+> ⚠️ 仅供备份**你自己有权访问**的内容。请遵守各站点服务条款与创作者的作品许可，不要用于传播或转售。
 
 ---
 
@@ -18,10 +25,12 @@
 | 全量抓取 | 输入创作者主页 / 名字 / 数字 ID，分页抓取全部作品 |
 | 单篇抓取 | 粘贴任意作品链接（含分享链接），只抓这一篇并自动勾选，整场只要 **1 个请求** |
 | 合集浏览 | 按创作者整理的合集（Collections）筛选作品；粘贴合集链接可**一次请求**抓回整个合集 |
+| **JOI Database** | 粘贴作者页链接，**1 个请求**列出全部视频并批量下载；自动取 **1080p/最高画质** |
 | 内容识别 | 图片（原图 / 大图 / 中图）、mux 完整版视频、直链视频、音频、附件 |
 | 正文内嵌媒体 | 新版编辑器把多个视频写进正文（如「索引贴」），程序解析正文并逐个取回 |
 | 按部分分目录 | 一篇含多个部分时，按正文标题自动分组，每组一个子目录 |
 | 批量下载 | 多线程并发、断点续传、自动重试、清晰度回退 |
+| HLS 支持 | 自动读主播放列表挑最高码率、顺序拼分片、用 ffmpeg 无损封装成 MP4 |
 | 增量同步 | 按「下载目录内的相对路径」判断已下载，换目录也不用重下 |
 | 归档 | 可选输出 `post.txt`（正文）与 `post.json`（元数据 + 媒体清单） |
 | 外链视频 | 可选调用 yt-dlp 下载 YouTube / Vimeo 等嵌入视频 |
@@ -125,6 +134,34 @@ https://www.patreon.com/BBebe/posts/exclusive-videos-141949666?utm_medium=clipbo
 | --- | --- | --- | --- |
 | 请求数 | 1 个主页 + 每页 1 个 | **1 个** | **1 个**（另加 1 个列合集） |
 | 适合 | 批量备份、增量同步 | 只想拿某一篇 | 只想拿某一类（按题材/系列） |
+
+### 抓 the-joi-database.com
+
+**不需要登录**，也不需要额外设置。把作者页链接粘进同一个输入框即可：
+
+```
+https://www.the-joi-database.com/profile/6f0574ee171ebd1297b801f8
+```
+
+→ **1 个请求**列出该作者的**全部**视频（实测 121 个，约 4 秒），表格里任你挑选下载。
+
+也支持：
+
+| 输入 | 抓什么 |
+| --- | --- |
+| `/profile/<id>` | 该作者的全部视频 |
+| `/watch/<id>` | 只抓这一个视频 |
+| `/playlist/<id>` | 该播放列表里的视频 |
+| `joi:<profile_id>` | 简写，等价于作者页 |
+
+**画质**：站点的流是 HLS，主播放列表里带画质档位（例如
+`BANDWIDTH=9860401,RESOLUTION=1920x1080,NAME="1080"`）。程序按 `BANDWIDTH`
+**自动选最高档**，拼分片后用 ffmpeg 无损封装成 MP4——和 Patreon 的流走同一条路。
+
+> 作者页只有「3 days ago」这种相对时间，没有绝对日期。把相对时间换算成日期会
+> 让文件夹名随运行时间漂移（每次跑都变，于是不断产生重复目录），所以 JOI 的
+> 作品**不带日期**：命名模板 `{date}_{title}` 会自动收成 `{title}`。
+> 想看精确日期可以粘 `/watch/<id>` 单篇链接，那一页有 `Aug 08, 2024`。
 
 > `/c/`、`/cw/`、`/user` 这类路径前缀会自动去掉，跳转也会自动跟随；
 > Patreon 分享按钮带的 `?utm_*` 参数一律忽略，不影响结果。
@@ -286,7 +323,10 @@ Patreon 有时会给预告片单独建一个 mux 资产，而作品关系里的�
 .venv\Scripts\python.exe tests\live_check.py https://www.patreon.com/cw/BBebe --collections
 .venv\Scripts\python.exe tests\live_check.py "https://www.patreon.com/collection/2084280" --collection --download
 .venv\Scripts\python.exe tests\live_check.py "<作品链接>" --post --download
+.venv\Scripts\python.exe tests\live_check.py "https://www.the-joi-database.com/profile/6f0574ee171ebd1297b801f8" --count 5
 ```
+
+带 `the-joi-database.com` 的地址会自动走 JOI 分支，不用额外开关。
 
 ## 项目结构
 
@@ -296,14 +336,15 @@ main.py  run.bat  run-debug.bat  setup.bat  build.bat  patreon_dl.spec
 patreon_dl\
 ├── config.py       配置与路径      ├── ui\
 ├── models.py       数据模型        │   ├── app.py             入口 / 自检
-├── patreon.py      API 客户端      │   ├── main_window.py     主窗口
+├── patreon.py      Patreon API 客户端  │   ├── main_window.py     主窗口
+├── joi.py          JOI Database 适配器 │   ├── login_window.py    内置浏览器登录
 ├── extract.py      媒体提取        │   ├── login_window.py    内置浏览器登录
 ├── downloader.py   下载引擎        │   ├── settings_dialog.py 设置
 ├── naming.py       命名模板        │   ├── post_model.py      表格模型
 ├── metadata.py     归档输出        │   ├── theme.py           主题
 ├── state.py        增量状态        │   └── workers.py         后台线程
 ├── cookies.py      Cookie 处理     └── util.py
-tests\   test_extract.py  test_state.py  test_duplicates.py  gui_smoke.py  live_check.py
+tests\   test_extract.py  test_state.py  test_duplicates.py  test_joi.py  gui_smoke.py  live_check.py
 tools\   build_exe.py     make_bat.py    clean_duplicate_folders.py
 docs\    技术细节.md      打包说明.md
 data\    运行时数据（自动创建，已在 .gitignore 中）

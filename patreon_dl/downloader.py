@@ -23,6 +23,11 @@ from .state import StateStore
 from .util import guess_extension, human_size
 
 HLS_HINTS = (".m3u8",)
+HLS_MIMETYPES = {
+    "application/x-mpegurl",
+    "application/vnd.apple.mpegurl",
+    "audio/mpegurl",
+}
 STATUS_DONE = "done"
 STATUS_SKIPPED = "skipped"
 STATUS_FAILED = "failed"
@@ -272,9 +277,26 @@ class DownloadEngine:
                           seconds=time.monotonic() - started, attempts=attempts)
 
     # ------------------------------------------------------------ 实际下载
+    def _is_hls(self, task: Task, url: str) -> bool:
+        """这个地址是不是 HLS 播放列表？
+
+        不能只看 ``.m3u8`` 后缀：有的站点（the-joi-database.com）的流地址是
+        ``/api/stream/<id>``，没有后缀，直接当普通文件下会只存回 100 多字节的
+        播放列表文本。所以同时认 mimetype 和媒体自己标记的 ``hls`` 字段。
+        """
+        if any(hint in url.lower() for hint in HLS_HINTS):
+            return True
+        item = getattr(task, "item", None)
+        mimetype = str(getattr(item, "mimetype", "") or "").lower()
+        if mimetype in HLS_MIMETYPES:
+            return True
+        extra = getattr(item, "extra", None) or {}
+        hls = str(extra.get("hls") or "")
+        return bool(hls) and hls.split("#")[0] == url.split("#")[0]
+
     def _fetch_to_file(self, task: Task, url: str) -> tuple[str, int, bool]:
         session = self._session()
-        is_hls = any(hint in url.lower() for hint in HLS_HINTS)
+        is_hls = self._is_hls(task, url)
 
         part_name = task.filename + ".part"
         part_path = os.path.join(task.dest_dir, part_name)

@@ -10,6 +10,7 @@ from ..config import AppConfig
 from ..cookies import CookieRecord
 from ..downloader import DownloadEngine, Task, TaskResult, build_tasks, summarize
 from ..extract import ExtractOptions
+from ..joi import JoiClient, is_joi_reference
 from ..models import Campaign, PostItem
 from ..patreon import AuthError, PatreonClient, PatreonError
 from ..state import StateStore
@@ -29,6 +30,7 @@ class FetchWorker(QThread):
     posts_batch = Signal(object)         # list[PostItem]
     page_progress = Signal(int, int)     # 已抓取, 总数
     inline_progress = Signal(int)        # 已取回多少个「正文内嵌媒体」
+    log = Signal(str)                    # 过程提示（例如「正在读取页面」）
     failed = Signal(str)
     completed = Signal(int)              # 累计作品数
 
@@ -52,9 +54,13 @@ class FetchWorker(QThread):
 
     def run(self) -> None:  # noqa: D102
         try:
+            if is_joi_reference(self.reference) or is_joi_reference(self.collection_id or ""):
+                self._run_joi()
+                return
+
             client = PatreonClient(self.config)
             client.set_cookies(self.cookies)
-            client.log = lambda message: None
+            client.log = self.log.emit
             # 正文里内嵌的媒体要逐个额外请求，这里把进度报给界面
             client.on_media_progress = lambda count: self.inline_progress.emit(count)
 
@@ -100,6 +106,39 @@ class FetchWorker(QThread):
             return
         if collections:
             self.collections_ready.emit(collections)
+
+    # ------------------------------------------------------------ JOI Database
+    def _run_joi(self) -> None:
+        """抓取 the-joi-database.com 的作者页 / 视频页。
+
+        与 Patreon 不同，作者页**一次就列出全部视频**，所以只有一批结果。
+        每个视频的媒体地址指向站点的 HLS 主播放列表，下载器会自动挑最高码率
+        变体、拼分片、用 ffmpeg 无损封装成 mp4。
+        """
+        reference = self.reference or (self.collection_id or "")
+        client = JoiClient(self.config, self.cookies)
+        client.log = self.log.emit
+
+        self.page_progress.emit(0, 1)
+        campaign = client.fetch_creator(reference)
+        self.campaign_ready.emit(campaign)
+
+        total = 0
+        for batch in client.iter_posts(
+            campaign.id,
+            reference=reference,
+            options=self.options,
+            creator=campaign.vanity,
+            on_page=lambda fetched, all_count: self.page_progress.emit(fetched, all_count),
+            should_stop=lambda: self._stop,
+            max_posts=int(self.config.max_posts or 0),
+        ):
+            if self._stop:
+                break
+            total += len(batch)
+            self.posts_batch.emit(batch)
+
+        self.completed.emit(total)
 
     def _run_single(self, client: PatreonClient) -> None:
         """只抓取指定的一篇作品（只需 1 个请求）。"""

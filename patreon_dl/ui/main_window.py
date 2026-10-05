@@ -39,6 +39,7 @@ from ..cookies import CookieRecord, load_cookies
 from ..downloader import TaskResult
 from ..extract import ExtractOptions, filter_by_kind
 from ..models import Campaign, Collection, PostItem
+from ..joi import is_joi_reference
 from ..patreon import PatreonError, parse_reference_all
 from ..state import StateStore
 from ..util import human_size
@@ -141,10 +142,15 @@ class MainWindow(QMainWindow):
         bar.addWidget(QLabel(" 创作者 "))
         self.creator_edit = QLineEdit()
         self.creator_edit.setPlaceholderText(
-            "创作者主页（如 BBebe、https://www.patreon.com/cw/BBebe），"
-            "或某一篇作品的链接，或数字 ID"
+            "Patreon 主页 / 作品链接，或 JOI Database 作者页（the-joi-database.com/profile/…）"
         )
         self.creator_edit.setMinimumWidth(360)
+        self.creator_edit.setToolTip(
+            "支持两种站点：\n"
+            "  · Patreon —— 主页、作品链接、合集链接、创作者名字或数字 ID\n"
+            "  · the-joi-database.com —— 作者页 /profile/…、视频页 /watch/…、播放列表 /playlist/…\n"
+            "JOI Database 不需要登录，视频一律取最高画质。"
+        )
         self.creator_edit.returnPressed.connect(self._on_fetch)
         self.creator_edit.textChanged.connect(self._on_creator_text_changed)
         bar.addWidget(self.creator_edit)
@@ -437,10 +443,14 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------ 单篇链接识别
     def _on_creator_text_changed(self) -> None:
-        """输入框里换成另一篇作品的链接时，自动勾上「只抓这一篇」。"""
+        """输入框里换成另一篇作品的链接时，自动勾上「只抓这一篇」。
+
+        JOI Database 的链接不走这套：``/watch/<id>`` 本身就只对应一个视频，
+        ``/profile/<id>`` 一次拿到全部视频，都不需要额外的「只抓这一篇」开关。
+        """
         text = self.creator_edit.text().strip()
         post_id: str | None = None
-        if text:
+        if text and not is_joi_reference(text):
             try:
                 kind, values = parse_reference_all(text)
                 if kind == "post" and values:
@@ -572,6 +582,7 @@ class MainWindow(QMainWindow):
         self.fetch_worker.posts_batch.connect(self._on_posts_batch)
         self.fetch_worker.page_progress.connect(self._on_fetch_progress)
         self.fetch_worker.inline_progress.connect(self._on_inline_progress)
+        self.fetch_worker.log.connect(self.log)
         self.fetch_worker.failed.connect(self._on_fetch_failed)
         self.fetch_worker.completed.connect(self._on_fetch_completed)
         self.fetch_worker.start()
